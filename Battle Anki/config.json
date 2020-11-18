@@ -1,0 +1,7 @@
+{
+  "use_deck": "AnKing",
+  "server_ip_address": "123.456.7.890",
+  "server_port": "54321",
+  "server_password": "password",
+  "NOTE": "AFTER MAKING ANY CHANGES HERE YOU WILL HAVE TO RESTART ANKI FOR THEM TO TAKE EFFECT"
+}
