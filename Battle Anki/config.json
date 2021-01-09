@@ -1,7 +1,10 @@
 {
   "use_deck": "AnKing",
-  "server_ip_address": "123.456.7.890",
-  "server_port": "54321",
+  "server_ip_address": "000.000.0.000",
+  "server_port": "00000",
   "server_password": "password",
-  "NOTE": "AFTER MAKING ANY CHANGES HERE YOU WILL HAVE TO RESTART ANKI FOR THEM TO TAKE EFFECT"
+  "NOTE": "AFTER MAKING ANY CHANGES HERE YOU WILL HAVE TO RESTART ANKI FOR THEM TO TAKE EFFECT",
+  "Note 2": "You may add extra search criteria to your 'use_deck'... for example if you use AnKing and want to have cards only due today (not any overdue cards), you would add 'prop:due=0' to the 'Extra Search Criteria' field. Other search syntax is available here: https://docs.ankiweb.net/#/searching?id=searching",
+  "Rule": "DO NOT NAME YOUR 'use_deck' = 'Battle Deck n' where 'n' is any number",
+  "Extra Search Criteria": ""
 }

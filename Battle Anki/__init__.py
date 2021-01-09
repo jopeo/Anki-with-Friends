@@ -1,3 +1,5 @@
+from . import myclass
+from . import OptDia
 from . import ask_BD
 from . import BAmainwin
 from . import battle_conf
