@@ -1,10 +1,10 @@
+from . import ty
 from . import myclass
 from . import OptDia
 from . import ask_BD
 from . import BAmainwin
 from . import battle_conf
 from . import reb_comms
-from . import ty
 from . import main
 
 #                     Copyright © 2020 Joseph Policarpio

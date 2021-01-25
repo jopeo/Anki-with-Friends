@@ -27,7 +27,7 @@
 - Holiday Edition and badges and timing added
 
 ## v1.33  12/26/20
- - Marathon Mode now toggleable. Multiplayer up to 6 players in one battle
+- Marathon Mode now toggleable. Multiplayer up to 6 players in one battle
  
 ## v1.35  12/29/20
 - Added ability to join a battle in progress. Updated some aesthetics
@@ -50,4 +50,9 @@
 - Fixed error at end of battle
 - Consolidated code, implemented several functions where applicable
 - Logging implemented, all files stored locally on client machine
+
+## v2.22 1/10/21
+- Fixed error with deck names consisting of two words
+- Spinbox for number of cards of Battle Deck now in Battle Window as well as Options Dialog
+- Minor backend changes
 

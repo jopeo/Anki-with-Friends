@@ -17,23 +17,19 @@
 #     You should have received a copy of the GNU Affero General Public License
 #     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-
-import json
-import select
-import shutil
 import socket
 import threading
+import json
+import select
+import datetime
 import time
 import sys
 import os
 import subprocess
-import datetime
+import shutil
 
-from PyQt5 import QtCore, QtGui, QtWidgets
 from anki.consts import *
-from anki.lang import _
-from anki.stats import CollectionStats
-
+# from anki.stats import CollectionStats
 from aqt import mw, gui_hooks
 from aqt.qt import *
 from aqt.utils import *
@@ -46,32 +42,21 @@ from .battle_conf import *
 from .reb_comms import *
 from .ty import *
 
-ba_ver = "2.17"    # ###########################################################
-
-config_ba = mw.addonManager.getConfig(__name__)
-use_deck = str(config_ba['use_deck']).strip()
-port = int(config_ba['server_port'])
-server = str(config_ba['server_ip_address']).strip()
-password = str(config_ba['server_password']).strip()
-xtra_search = str(config_ba['Extra Search Criteria']).strip()
-config_ba['Your Anki Version'] = anki.buildinfo.version
-config_ba['Your Battle Anki version'] = ba_ver
-config = config_ba
-mw.addonManager.writeConfig(__name__, config)
+ba_ver = "2.22"  # #####################################################################################################
 
 spinbox_decksize = 100
 decksize = 100
 matched_box = False
 new_box = False
-learn_box = True
+review_box = True
 new_AND_review_box = False
 mature_box = False
 resched_box = True
 today_only = True
 joiners_box = True
-card_type_str = 'Review'
+card_type_str = 'Reviews only'
+card_order_str = 'Order of relative overdueness'
 card_order = int(DYN_DUEPRIORITY)
-card_order_str = 'In order of relative overdueness'
 
 can_sendittt = False
 popped_req = False
@@ -111,16 +96,9 @@ told_problem = False
 cards_left = 0
 cards_today = 0
 time_today = '0:00'
-mehost = False
-
 one_to_ten = False
 ff_ff = False
 nty = False
-
-if socket.gethostname() == 'DESKTOP-F1NF0JO':
-    mehost = True
-else:
-    mehost = False
 
 local_data = {'ver': ba_ver,
               'card ids': [{}],
@@ -141,16 +119,24 @@ local_data = {'ver': ba_ver,
                                   'req Remote IP': str(),
                                   'req Remote IPs': []}}
 
-store_data = {'request options': dict()}
-store_data['request options']['both box'] = new_AND_review_box
-store_data['request options']['deck size'] = decksize
-store_data['request options']['matched box'] = matched_box
-store_data['request options']['new box'] = new_box
-store_data['request options']['learn box'] = learn_box
-store_data['request options']['mature box'] = mature_box
-store_data['request options']['resched box'] = resched_box
-store_data['request options']['due box'] = today_only
-store_data['request options']['requester'] = str(mw.pm.name)
+# todo: make these dicts smaller - sending unnecessary data,
+#  remove whatever isn't needed, minimize server comm data....
+
+store_data = {
+    'request options': {
+        'both box': None,
+        'deck size': None,
+        'matched box': None,
+        'new box': None,
+        'learn box': None,
+        'mature box': None,
+        'resched box': None,
+        'due box': None,
+        'requester': None
+    }
+}
+
+# todo: cardtype not always recalled after battle
 
 n = int()
 
@@ -166,11 +152,11 @@ readys = {
     'cc': []
 }
 
+deltas = list()
+
 header = 32
 msg_format = 'utf-8'
 disconn_msg = 'Disconnected'
-print(f"""[SERVER IP] {server} on port {port}""")
-threadlocker = threading.Lock()
 
 rejoined = ' rejoined the game!'  # 0
 joined = ' joined the game!'  # 1
@@ -179,67 +165,32 @@ not_here = ' is starting...'  # 3
 name_only = ''  # 4
 tails = [rejoined, joined, left, not_here, name_only]
 
+# chk_socket = (False if socket.gethostname()
+#               != 'DESKTOP-F1NF0JO' else True)
+
 bw = object
 logger = logging.Logger
 logger_ui = logging.Logger
 logger_utils = logging.Logger
 logger_comms = logging.Logger
 logger_user = logging.Logger
-BAlog = logging.Handler
+handlr = logging.Handler
 formatter = logging.Formatter
 log_fold = str()
 
+threadlocker = threading.Lock()
 
-def start_logger():
-    global logger
-    global logger_ui
-    global logger_utils
-    global logger_comms
-    global logger_user
-    global BAlog
-    global formatter
-    global log_fold
+config = dict()
+use_deck = str()
+port = int()
+server = str()
+password = str()
+xtra_search = str()
+sv = int()
 
-    log_fold = os.path.join(os.getcwd(), "..", "..", 'addons21', 'BA_logfiles')
-    if not os.path.exists(log_fold):
-        os.makedirs(log_fold)
-    log_nm = 'BA_logfile.log'
-    log_path = os.path.join(log_fold, log_nm)
+lg_dct = dict()
 
-    logger = logging.getLogger('')
-    logger.setLevel(logging.DEBUG)
-    switch_daily_at = datetime.datetime(datetime.datetime.now().year,
-                                        datetime.datetime.now().month,
-                                        datetime.datetime.now().day,
-                                        hour=4, minute=0, fold=1)
-    BAlog = logging.handlers.TimedRotatingFileHandler(filename=log_path,
-                                                      when='midnight',
-                                                      backupCount=14,
-                                                      atTime=switch_daily_at)
-    formatter = MyFormatter(fmt='%(asctime)-33s %(name)-7s %(levelname)-8s %(message)s',
-                            datefmt='%Y/%m/%d  %I:%M:%S.%f %p')
-    BAlog.setFormatter(formatter)
-    logger.addHandler(BAlog)
-
-    logger_ui = logging.getLogger('BA_UI')
-    logger_utils = logging.getLogger('Utils')
-    logger_comms = logging.getLogger('Comms')
-    logger_user = logging.getLogger('User')
-
-    logger_ui.setLevel(logging.INFO)
-    logger_utils.setLevel(logging.INFO)
-    logger_comms.setLevel(logging.INFO)
-    logger_user.setLevel(logging.INFO)
-
-    s0 = (f'version: {ba_ver}', '', False)
-    s1 = ('[Logger Initiated by start_logger()]', '=')
-    s2 = (f'Next log file rollover:       '
-          f'{str(datetime.datetime.fromtimestamp(BAlog.computeRollover(time.time())))[:-7]}', ' ')
-    s3 = ('', '=')
-    so = fmt_n_log([s0, s1, s2, s3])
-    logger_utils.info(so)
-    logger_utils.info(dict_to_str(config_ba))
-    return
+# ######################################################################################################################
 
 
 class MainWindow:
@@ -266,6 +217,14 @@ class MainWindow:
         self.ui.label_version.setText(f'v{ba_ver}')
         self.ui.label_version.clicked.connect(lambda: openfolder(log_fold))
 
+        self.ui.label_blank_d.setText(' ')
+
+        self.ui.label_blank_d.clicked.connect(lambda: sav_sd())
+        self.ui.label_blank_r.clicked.connect(lambda: do_Ro())
+
+        sb = self.ui.spinbox_bdecksize_bw
+        sb.valueChanged.connect(lambda: spinbox_val_change(sb.value(), 'bw'))
+
         self.update_home_labels()
 
         self.ui.but_away.clicked.connect(self.set_away)
@@ -280,12 +239,11 @@ class MainWindow:
         self.timer.timeout.connect(self.hb)
 
         self.ui.tableWidget_users_connected.horizontalHeader().setSectionResizeMode(QHeaderView.Fixed)
-        self.ui.tableWidget_users_connected.setStyleSheet("QHeaderView::section{font-size: 12 pt; "
-                                                          "Background-color:rgb(182,182,182);}")
         self.ui.tableWidget_users_connected.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.ui.tableWidget_users_connected.setSelectionMode(QtWidgets.QAbstractItemView.MultiSelection)
         self.ui.tableWidget_users_connected.horizontalHeader().setVisible(True)
-
+        self.ui.tableWidget_users_connected.setStyleSheet("QHeaderView::section{font-size: 12 pt; "
+                                                          "Background-color:rgb(182,182,182);}")
         self.set_badgeview()
 
         self.ui.progressBar_waiting.setStyleSheet("QProgressBar::chunk{background: QLinearGradient(x1: 0, y1: 0, x2: 1,"
@@ -426,6 +384,7 @@ class MainWindow:
         self.ss_set_2_bars()
 
         s = self.ui
+
         s.away_hovered = '#ff877a'
         s.away_hov_bd = colorscale(s.away_hovered, .7)
         s.away_hv_chck = '#7cf283'
@@ -460,69 +419,88 @@ class MainWindow:
         s.opt_prs = '#e07ee0'
         s.opt_prs_bd = colorscale(s.opt_prs, .5)
 
-        self.ui.but_away.setStyleSheet(f"QPushButton#but_away:hover:!pressed{{background-color: {s.away_hovered};"
-                                       f"border-style: solid; border-width: 2px; border-color: {s.away_hov_bd};}}"
-                                       f"QPushButton#but_away:hover:checked{{background-color: {s.away_hv_chck};"
-                                       f"border-style: solid; border-width: 2px; border-color: {s.away_hv_chck_bd};}}"
-                                       f"QPushButton#but_away:hover:pressed{{background-color: {s.away_hv_prs};"
-                                       f"border-style: solid; border-width: 2px; border-color: {s.away_hv_prs_bd};}}"
-                                       f"QPushButton#but_away:checked{{background-color: {s.away_chckd};"
-                                       f"border-style: solid; border-width: 2px; border-color: {s.away_chckd_bd};}}")
-        self.ui.but_badge.setStyleSheet(f"QPushButton#but_badge:hover:!pressed{{background-color: {s.bdg_hovered};"
-                                        f"border-style: solid; border-width: 2px; border-color: {s.bdg_hov_bd};}}"
-                                        f"QPushButton#but_badge:hover:checked{{background-color: {s.bdg_hv_chck};"
-                                        f"border-style: solid; border-width: 2px; border-color: {s.bdg_hv_chck_bd};}}"
-                                        f"QPushButton#but_badge:hover:pressed{{background-color: {s.bdg_hvprs};"
-                                        f"border-style: solid; border-width: 2px; border-color: {s.bdg_hvprs_bd};}}"
-                                        f"QPushButton#but_badge:checked{{background-color: {s.bdg_chckd};"
-                                        f"border-style: solid; border-width: 2px; border-color: {s.bdg_chckd_bd};}}")
-        self.ui.but_join.setStyleSheet(f"QPushButton#but_join:hover:!pressed{{background-color: {s.join_hovered};"
-                                       f"border-style: solid; border-width: 2px; border-color: {s.join_hov_bd};}}"
-                                       f"QPushButton#but_join:pressed{{background-color: {s.join_prs};"
-                                       f"border-style: solid; border-width: 2px; border-color: {s.join_prs_bd};}}")
-        self.ui.but_sendittt.setStyleSheet(f"QPushButton#but_sendittt:hover:!pressed{{background-color: {s.send_hov};"
-                                           f"border-style: solid; border-width: 2px; border-color: {s.send_hov_bd};}}"
-                                           f"QPushButton#but_sendittt:pressed{{background-color: {s.send_prs};"
-                                           f"border-style: solid; border-width: 2px; border-color: {s.send_prs_bd};}}")
-        self.ui.but_options.setStyleSheet(f"QPushButton#but_options:hover:!pressed{{background-color: {s.opt_hovered};"
-                                          f"border-style: solid; border-width: 2px; border-color: {s.opt_hov_bd};}}"
-                                          f"QPushButton#but_options:pressed{{background-color: {s.opt_prs};"
-                                          f"border-style: solid; border-width: 2px; border-color: {s.opt_prs_bd};}}")
+        s.b = '1'  # pushbutton border width:
+
+        b_a = self.ui.but_away
+        b_a.setStyleSheet(f"QPushButton#but_away:hover:!pressed{{background-color: {s.away_hovered};"
+                            f"border-style: solid; border-width: {s.b}px; border-color: {s.away_hov_bd};}}"
+                            f"QPushButton#but_away:hover:checked{{background-color: {s.away_hv_chck};"
+                            f"border-style: solid; border-width: {s.b}px; border-color: {s.away_hv_chck_bd};}}"
+                            f"QPushButton#but_away:hover:pressed{{background-color: {s.away_hv_prs};"
+                            f"border-style: solid; border-width: {s.b}px; border-color: {s.away_hv_prs_bd};}}"
+                            f"QPushButton#but_away:checked{{background-color: {s.away_chckd};"
+                            f"border-style: solid; border-width: {s.b}px; border-color: {s.away_chckd_bd};}}")
+        b_b = self.ui.but_badge
+        b_b.setStyleSheet(f"QPushButton#but_badge:hover:!pressed{{background-color: {s.bdg_hovered};"
+                          f"border-style: solid; border-width: {s.b}px; border-color: {s.bdg_hov_bd};}}"
+                          f"QPushButton#but_badge:hover:checked{{background-color: {s.bdg_hv_chck};"
+                          f"border-style: solid; border-width: {s.b}px; border-color: {s.bdg_hv_chck_bd};}}"
+                          f"QPushButton#but_badge:hover:pressed{{background-color: {s.bdg_hvprs};"
+                          f"border-style: solid; border-width: {s.b}px; border-color: {s.bdg_hvprs_bd};}}"
+                          f"QPushButton#but_badge:checked{{background-color: {s.bdg_chckd};"
+                          f"border-style: solid; border-width: {s.b}px; border-color: {s.bdg_chckd_bd};}}")
+        b_j = self.ui.but_join
+        b_j.setStyleSheet(f"QPushButton#but_join:hover:!pressed{{background-color: {s.join_hovered};"
+                          f"border-style: solid; border-width: {s.b}px; border-color: {s.join_hov_bd};}}"
+                          f"QPushButton#but_join:pressed{{background-color: {s.join_prs};"
+                          f"border-style: solid; border-width: {s.b}px; border-color: {s.join_prs_bd};}}")
+        b_s = self.ui.but_sendittt
+        b_s.setStyleSheet(f"QPushButton#but_sendittt:hover:!pressed{{background-color: {s.send_hov};"
+                          f"border-style: solid; border-width: {s.b}px; border-color: {s.send_hov_bd};}}"
+                          f"QPushButton#but_sendittt:pressed{{background-color: {s.send_prs};"
+                          f"border-style: solid; border-width: {s.b}px; border-color: {s.send_prs_bd};}}")
+        b_o = self.ui.but_options
+        b_o.setStyleSheet(f"QPushButton#but_options:hover:!pressed{{background-color: {s.opt_hovered};"
+                          f"border-style: solid; border-width: {s.b}px; border-color: {s.opt_hov_bd};}}"
+                          f"QPushButton#but_options:pressed{{background-color: {s.opt_prs};"
+                          f"border-style: solid; border-width: {s.b}px; border-color: {s.opt_prs_bd};}}")
         logger_ui.info('Mainwindow instance initiated')
 
     def update_home_labels(self):
+        self.ui.lab_pg1_overdues.hide()
         self.ui.lab_pg1_matched.hide()
         self.ui.lab_pg1_tit_matched.hide()
         self.ui.lab_pg1_tit_cardorder.hide()
+        self.ui.lab_pg1_cards.hide()  # setText(str(decksize))
+        self.ui.lab_pg1_tit_cards.hide()
+        self.ui.lab_max_cards.hide()
+        self.ui.lab_pg1_opt_tit.hide()
+        self.ui.lab_pg1_opt_tit_2.hide()
 
-        self.ui.lab_pg1_cards.setText(str(decksize))
+        self.ui.spinbox_bdecksize_bw.setValue(decksize)
+
         self.ui.lab_pg1_cardtype.setText(card_type_str)
         self.ui.lab_pg1_cardorder.setText(card_order_str)
 
         if today_only:
             self.ui.lab_pg1_due_today.show()
-            self.ui.lab_pg1_overdues.show()
+            # self.ui.lab_pg1_overdues.show()
         else:
             self.ui.lab_pg1_due_today.hide()
-            self.ui.lab_pg1_overdues.hide()
+            # self.ui.lab_pg1_overdues.hide()
 
         if resched_box:
-            self.ui.lab_pg1_resched.setText('Yes')
+            self.ui.lab_pg1_resched.hide()  # setText('')
+            self.ui.lab_pg1_tit_resched.setText('Reschedule')
         else:
             self.ui.lab_pg1_resched.setText('do NOT')
+            self.ui.lab_pg1_resched.show()  # setText('')
+            self.ui.lab_pg1_tit_resched.setText('reschedule')
 
         if joiners_box:
-            self.ui.lab_pg1_joiners.setText('Yes')
+            self.ui.lab_pg1_joiners.hide()  # setText('')
+            self.ui.lab_pg1_tit_joiners.setText('Accept joins in battle')
         else:
             self.ui.lab_pg1_joiners.setText('do NOT')
-
-        logger_ui.info(f'update_home_labels() completed')
+            self.ui.lab_pg1_joiners.show()  # setText('')
+            self.ui.lab_pg1_tit_joiners.setText('accept joins in battle')
+        # logger_ui.info('update_home_labels completed')
         return
 
     def scale_img(self, name: str, w: int, h: int):
         img = QPixmap(name)
         scaled = img.scaled(w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        logger_utils.debug('scale_img() completed')
+        logger_ui.debug('scale_img completed')
         return scaled
 
     def make_table_item(self, img: QPixmap):
@@ -530,14 +508,14 @@ class MainWindow:
         lbl.setPixmap(img)
         lbl.setAlignment(Qt.AlignCenter)
         itm = lbl
-        logger_ui.debug('make_table_item() completed')
+        logger_ui.debug('make_table_item completed')
         return itm
 
     def undojoin(self):
         self.timer_joined.stop()
         global accepted_req
         accepted_req = False
-        logger_utils.info('info() completed')
+        logger_ui.info('undojoin completed')
 
     def move_resource(self, res_name: str, repl=False):
         end_dest = os.path.join(os.getcwd(), res_name)
@@ -562,7 +540,7 @@ class MainWindow:
                 logger_ui.debug('move_resource() completed')
 
     def set_away(self):
-        logger_user.debug('set_away() clicked')
+        logger_user.debug('set_away clicked')
         global inbattle
         if self.ui.but_away.isChecked():
             inbattle = None
@@ -594,7 +572,7 @@ class MainWindow:
         local_data['request options']['req Remote IP'] = ''
         local_data['request options']['req name'] = ''
         self.timer_undo_request.stop()
-        logger_utils.info('undorequest() completed')
+        logger_ui.info('undorequest completed')
 
     def undoaccept(self):
         global accepted_req
@@ -616,7 +594,7 @@ class MainWindow:
             except IndexError:
                 pass
         self.timer_undo_accepted.stop()
-        logger_utils.info('undoaccept() completed')
+        logger_ui.info('undoaccept completed')
 
     def reset(self):
         global local_data
@@ -674,16 +652,16 @@ class MainWindow:
         self.ss_set_2_bars()
         self.main_win.show()
 
-        logger_ui.info('reset() completed')
+        logger_ui.info('reset completed')
 
     def updateBattleBars(self):
         global local_data
-        global sd
+        # global sd
         global myprogress
         global challenger_progress
         global decksize
         global challenger_ip
-        global dyn_id
+        # global dyn_id
         global challenger_name
         global told_problem
         global cards_left
@@ -817,6 +795,7 @@ class MainWindow:
             conn = [0] * len(conn)
 
             if myprogress >= 100:
+                self.log_fin()
                 get_local_data()
                 send_pulse()
                 self.ui.progressBar_p1.setValue(myprogress)
@@ -828,14 +807,13 @@ class MainWindow:
                     show_and_log("Nice work! You are almost an AnKing!")
                 self.reset()
                 self.showHome()
-                self.log_fin()
             elif myprogress < 7:
                 self.ui.progressBar_p1.setValue(7)
                 self.ui.progressBar_p1.update()
             elif 7 <= myprogress < 100:
                 self.ui.progressBar_p1.setValue(myprogress)
                 self.ui.progressBar_p1.update()
-        logger_ui.debug('updateBattleBars() completed')
+        logger_ui.debug('updateBattleBars completed')
         return
 
     def log_fin(self):
@@ -850,12 +828,15 @@ class MainWindow:
             self.step_load += 1
             self.main_win.setWindowTitle(f'Battle Anki is Loading...{round(self.step_load * (100 / 20))}%')
         else:
+            self.ui.lab_bat_tit.setDisabled(False)
+            self.ui.label_blank_r.setDisabled(False)
+            self.ui.frame.setDisabled(False)
             self.ui.centralwidget.setDisabled(False)
             self.main_win.setDisabled(False)
             self.timer_load.stop()
             isloading = False
             self.main_win.setWindowTitle(f'Battle Ankı')
-        logger_ui.debug('updateLoadBar() completed')
+        logger_ui.debug('updateLoadBar completed')
 
     def updateWaitingBar(self):
         if self.step <= 180:
@@ -864,16 +845,16 @@ class MainWindow:
             self.step = 0
         self.ui.progressBar_waiting.setValue(self.step * (100 / 180))
         self.ui.progressBar_waiting.update()
-        logger_ui.debug('updateWaitingBar() completed')
+        logger_ui.debug('updateWaitingBar completed')
 
 
     def show(self):
         self.main_win.show()
-        logger_ui.info('show() completed')
+        logger_ui.info('show completed')
 
 
     def showBattle(self):
-        logger_ui.info(f'showBattle() called...')
+        logger_ui.info(f'showBattle called...')
         global myprogress
         global challenger_progress
         global inbattle
@@ -933,7 +914,7 @@ class MainWindow:
                          f'Error Code 1775\n'
                          f'{msg}')
         finally:
-            logger_ui.info('Mainwindow closeEvent() completed')
+            logger_ui.info('Mainwindow closeEvent completed')
             return
 
     def close_all(self):
@@ -947,12 +928,12 @@ class MainWindow:
         except:
             pass
         finally:
-            logger_ui.info('close_all() completed')
+            logger_ui.info('close_all completed')
             return
 
     # from local window
     def get_request_data(self, join=False):
-        logger_ui.info('get_request_data() started')
+        logger_ui.info('get_request_data started')
 
         global local_data
         global can_sendittt
@@ -974,7 +955,7 @@ class MainWindow:
             show_and_log("You need to choose the number of cards!")
             return False
         else:
-            if new_box or learn_box or mature_box or new_AND_review_box:
+            if new_box or review_box or mature_box or new_AND_review_box:
                 if len(self.ui.tableWidget_users_connected.selectionModel().selectedRows()) > 0:
                     if join and len(self.ui.tableWidget_users_connected.selectionModel().selectedRows(0)) > 1:
                         show_and_log(f"You can only join one person\n"
@@ -1015,11 +996,11 @@ class MainWindow:
                                     if badgeview is True:
                                         for item in self.ui.tableWidget_users_connected.selectionModel().selectedRows(
                                                 4):
-                                            sel_ips.append(self.str_to_ip(item.data(0)))
+                                            sel_ips.append(str_to_ip(item.data(0)))
                                     elif badgeview is False:
                                         for item in self.ui.tableWidget_users_connected.selectionModel().selectedRows(
                                                 2):
-                                            sel_ips.append(self.str_to_ip(item.data(0)))
+                                            sel_ips.append(str_to_ip(item.data(0)))
                                     if (str(mw.pm.name) not in challenger_name) and (loc_rem_ip not in sel_ips):
                                         incompatible = None
                                         if join:
@@ -1088,13 +1069,6 @@ class MainWindow:
                 show_and_log("You need to choose the type of cards!")
                 return False
 
-    def str_to_ip(self, mystr: str):
-        myip = str(mystr.split(',')[0])[2:-1]
-        myport = int(mystr.split(',')[1][1:-1])
-        ip = str(f"('{myip}', {myport})")
-        logger_utils.debug('str_to_ip() completed')
-        return ip
-
     def showWait(self):
         self.ui.stackedWidget.setCurrentWidget(self.ui.page_2)
         self.ui.page_2.show()
@@ -1105,50 +1079,54 @@ class MainWindow:
     def startWaitingBar(self):
         self.step = 0
         self.timer_bar.start(50)
-        logger_ui.debug('startWaitingBar() completed')
+        logger_ui.debug('startWaitingBar completed')
 
     def refresh_users(self):
-        global card_order
         self.ui.tableWidget_users_connected.setSortingEnabled(False)
+
         if badgeview is False:
             self.refresh_regview()
         if badgeview is True:
             self.refresh_badgeview()
+
         self.ui.tableWidget_users_connected.setSortingEnabled(True)
-        self.ui.tableWidget_users_connected.update()
-        logger_ui.debug('refresh_users() completed')
+        logger_ui.debug('refresh_users completed')
+        return
 
     def showHome(self):
         self.ui.stackedWidget.setCurrentWidget(self.ui.page_1)
         self.main_win.show()
         self.ui.page_1.show()
         self.ui.page_1.setFocus()
-        logger_ui.info('showHome() completed')
+        logger_ui.info('showHome completed')
 
-    def startLoadBar(self):
+    def start_load_bw(self):
         global isloading
         isloading = True
         # self.ui.progressBar_loading.setFormat(f'Loading... %p%')
         self.main_win.setWindowTitle('Battle Anki is Loading...0%')
         self.step_load = 0
+
         # self.ui.lab_batform_connected.hide()
         # self.ui.lab_users_connected.hide()
         # self.ui.tableWidget_users_connected.hide()
-        # self.ui.frame.hide()
+        self.ui.lab_bat_tit.setDisabled(True)
+        self.ui.label_blank_r.setDisabled(True)
+        self.ui.frame.setDisabled(True)
         self.ui.centralwidget.setDisabled(True)
         self.timer_load.start(50)
-        logger_ui.debug('startLoadBar() completed')
+        logger_ui.debug('start_load_bw completed')
 
     def hb(self):
         if isloading is False:
             self.main_win.setWindowTitle('Battle Ankı')
             self.timer_hb.start(700)
-        logger_ui.debug('hb() completed')
+        logger_ui.debug('hb completed')
 
     def hb_dias(self):
         if isloading is False:
             self.main_win.setWindowTitle('Battle Anki')
-        logger_ui.debug('hb_dias() completed')
+        logger_ui.debug('hb_dias completed')
 
     def ss_update_any_bar(self, bar: QtWidgets.QProgressBar):
         dig = int(bar.objectName()[-1:])
@@ -1164,7 +1142,7 @@ class MainWindow:
                 bar.setStyleSheet(self.ss_even_bar_round)
             else:
                 bar.setStyleSheet(self.ss_even_bar_left_radius)
-        logger_ui.debug('ss_update_any_bar() completed')
+        logger_ui.debug('ss_update_any_bar completed')
 
     def ss_p1(self):
         if self.ui.progressBar_p1.value() >= 95:
@@ -1217,18 +1195,20 @@ class MainWindow:
         logger_ui.debug('ss_p2() completed')
 
     def toggle_badges(self):
-        logger_user.debug('toggle_badges() clicked')
+        logger_user.debug('toggle_badges clicked')
         global badgeview
         self.ui.tableWidget_users_connected.clearContents()
+
         if self.main_win.width() == 550:
             self.set_regview()
             badgeview = False
-            self.refresh_users()
         elif self.main_win.width() == 460:
             self.set_badgeview()
             badgeview = True
-            self.refresh_users()
-        logger_ui.info('toggle_badges() clicked & completed')
+
+        self.refresh_users()
+        logger_ui.info('toggle_badges clicked & completed')
+        return
 
     def set_regview(self):
         logger_user.debug('set_regview() clicked')
@@ -1260,15 +1240,16 @@ class MainWindow:
         self.ui.tableWidget_users_connected.setColumnWidth(3, 68)
         self.ui.tableWidget_users_connected.setHorizontalHeaderItem(4, QTableWidgetItem("IP"))
         self.ui.tableWidget_users_connected.setColumnWidth(4, 1)
-        logger_ui.info('set_badgeview() clicked & completed')
+        logger_ui.info('set_badgeview clicked & completed')
 
     def refresh_regview(self):
-        logger_ui.debug('refresh_regview() STARTED')
+        logger_ui.debug('refresh_regview STARTED')
         try:
             sel_ip = []
             if self.ui.tableWidget_users_connected.selectedItems():
                 for item in self.ui.tableWidget_users_connected.selectionModel().selectedRows(2):
                     sel_ip.append(item.data(0))
+
             player_count = len(sd)
             if player_count > 7:
                 self.ui.tableWidget_users_connected.setColumnWidth(0, 172)
@@ -1291,11 +1272,15 @@ class MainWindow:
                 else:
                     show_and_log(f'Sorry, there was a problem with Battle Anki...\n\n'
                                  f'                 EC 955')
+
             if sel_ip:
                 for i in range(self.ui.tableWidget_users_connected.rowCount()):
                     if self.ui.tableWidget_users_connected.item(i, 2).data(0) in sel_ip:
                         self.ui.tableWidget_users_connected.selectRow(i)
-            logger_ui.debug('refresh_regview() completed')
+
+            self.ui.tableWidget_users_connected.update()
+
+            logger_ui.debug('refresh_regview completed')
         except Exception as mesg:
             show_and_log(f'Sorry, there was a problem with Battle Anki...\n'
                          f'EC 1458\n'
@@ -1304,7 +1289,7 @@ class MainWindow:
             self.main_win.close()
 
     def refresh_badgeview(self):
-        logger_ui.debug('refresh_badgeview() STARTED')
+        logger_ui.debug('refresh_badgeview STARTED')
         try:
             sel_ip = []
             if self.ui.tableWidget_users_connected.selectedItems():
@@ -1375,7 +1360,10 @@ class MainWindow:
                 for i in range(self.ui.tableWidget_users_connected.rowCount()):
                     if self.ui.tableWidget_users_connected.item(i, 4).data(0) in sel_ip:
                         self.ui.tableWidget_users_connected.selectRow(i)
-            logger_ui.debug('refresh_badgeview() completed')
+
+            self.ui.tableWidget_users_connected.update()
+
+            logger_ui.debug('refresh_badgeview completed')
         except Exception as mesg:
             show_and_log(f'Sorry, there was a problem with Battle Anki...\n'
                          f'EC 1536\n'
@@ -1456,6 +1444,8 @@ self.ui.verticalLayout_12.addItem({name_sp})
         global decksize
         global local_data
         global accepted_req
+        
+        store_before_send()
 
         local_data['request options']['req name'] = ''
         local_data['request options']['req Remote IP'] = ''
@@ -1538,7 +1528,6 @@ class ConfDialog(QtWidgets.QDialog):
         logger_ui.info('ConfDialog() instance initiated')
 
 
-# noinspection PyCallByClass,PyArgumentList
 class AskDialog(QtWidgets.QDialog):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -1567,7 +1556,7 @@ class AskDialog(QtWidgets.QDialog):
         global decksize
         global matched_box
         global new_box
-        global learn_box
+        global review_box
         global mature_box
         global resched_box
         global today_only
@@ -1575,7 +1564,7 @@ class AskDialog(QtWidgets.QDialog):
         decksize = indict['deck size']
         matched_box = indict['matched box']
         new_box = indict['new box']
-        learn_box = indict['learn box']
+        review_box = indict['learn box']
         mature_box = indict['mature box']
         resched_box = indict['resched box']
         today_only = indict['due box']
@@ -1586,7 +1575,7 @@ class AskDialog(QtWidgets.QDialog):
             buildstring = f"""{decksize}
 {matched_box}
 {not new_box}
-{not learn_box}
+{not review_box}
 {mature_box}
 {resched_box}
 {today_only}"""
@@ -1594,7 +1583,7 @@ class AskDialog(QtWidgets.QDialog):
             buildstring = f"""{decksize}
 {matched_box}
 {new_box}
-{learn_box}
+{review_box}
 {mature_box}
 {resched_box} 
 {today_only}"""
@@ -1688,7 +1677,7 @@ class RebComms(QtWidgets.QDialog):
             bb_h = self.ui.buttonBox_reb_comms.height()
             self.ui.buttonBox_reb_comms.setGeometry(bb_nx, bb_ny, bb_w, bb_h)
             mw.battle_window.showHome()
-        logger_ui.info('RebComms() instance initiated')
+        logger_ui.info('RebComms instance initiated')
 
 
 class TY(QtWidgets.QDialog):
@@ -1704,7 +1693,7 @@ class TY(QtWidgets.QDialog):
         centerPoint = QDesktopWidget().availableGeometry().center()
         qtRectangle.moveCenter(centerPoint)
         self.move(qtRectangle.topLeft())
-        logger_ui.info('RebComms() instance initiated')
+        logger_ui.info('RebComms instance initiated')
 
 
 class OptDia(QtWidgets.QDialog):
@@ -1724,6 +1713,9 @@ class OptDia(QtWidgets.QDialog):
 
         self.ui.label_version.setText(f'v{ba_ver}')
         self.ui.label_version.clicked.connect(lambda: openfolder(log_fold))
+
+        sb = self.ui.spinbox_bdecksize_opts
+        sb.valueChanged.connect(lambda: spinbox_val_change(sb.value(), 'opt'))
 
         self.ui.but_apply.clicked.connect(self.accept_Opts)
 
@@ -1758,7 +1750,7 @@ class OptDia(QtWidgets.QDialog):
     def update_boxes(self):
         global matched_box
         global new_box
-        global learn_box
+        global review_box
         global mature_box
         global resched_box
         global today_only
@@ -1772,18 +1764,18 @@ class OptDia(QtWidgets.QDialog):
         global spinbox_decksize
 
         try:
-            spinbox_decksize = self.ui.spinbox_bdecksize.value()
-            decksize = self.ui.spinbox_bdecksize.value()
+            spinbox_decksize = self.ui.spinbox_bdecksize_opts.value()
+            decksize = self.ui.spinbox_bdecksize_opts.value()
 
             if self.ui.radioButton_random.isChecked():
                 card_order = DYN_RANDOM
                 card_order_str = 'Random order'
             elif self.ui.radioButton_due.isChecked():
                 card_order = DYN_DUE
-                card_order_str = 'In order due'
+                card_order_str = 'Order due'
             elif self.ui.radioButton_odue.isChecked():
                 card_order = DYN_DUEPRIORITY
-                card_order_str = 'In order of relative overdueness'
+                card_order_str = 'Order of relative overdueness'
 
             # if self.ui.checkBox_match_q.isChecked():
             #     matched_box = True
@@ -1792,19 +1784,19 @@ class OptDia(QtWidgets.QDialog):
 
             if self.ui.checkBox_card_new.isChecked():
                 new_box = True
-                card_type_str = 'New'
+                card_type_str = 'News Only'
             else:
                 new_box = False
             if self.ui.checkBox_card_learn.isChecked():
-                learn_box = True
-                card_type_str = 'Review'
+                review_box = True
+                card_type_str = 'Reviews Only'
             else:
-                learn_box = False
+                review_box = False
             if self.ui.checkBox_newANDreview.isChecked():
                 new_box = False
-                learn_box = False
+                review_box = False
                 new_AND_review_box = True
-                card_type_str = 'New & Review'
+                card_type_str = 'Both news & reviews'
             else:
                 new_AND_review_box = False
 
@@ -1839,8 +1831,8 @@ class OptDia(QtWidgets.QDialog):
             mw.battle_window.timer.stop()
 
     def set_OptDia_ui(self):
-        self.ui.spinbox_bdecksize.setValue(spinbox_decksize)
-        self.ui.checkBox_card_learn.setChecked(learn_box)
+        self.ui.spinbox_bdecksize_opts.setValue(decksize)
+        self.ui.checkBox_card_learn.setChecked(review_box)
         self.ui.checkBox_newANDreview.setChecked(new_AND_review_box)
         self.ui.checkBox_card_new.setChecked(new_box)
         if card_order == DYN_RANDOM:
@@ -1861,7 +1853,7 @@ class OptDia(QtWidgets.QDialog):
 
         self.show()
 
-        logger_ui.info(f'set_OptDia_ui() completed')
+        logger_ui.info(f'set_OptDia_ui completed')
         return
 
     def accept_Opts(self):
@@ -1886,290 +1878,17 @@ class OptDia(QtWidgets.QDialog):
         else:
             self.update_boxes()
             get_loc_req_opts()
+            store_before_send()
             self.close()
 
-            logger_user.info('accept_Opts() completed')
+            logger_user.info('accept_Opts completed')
             return
 
 
-def opts_open():
-    mw.opts = QDialog()
-    mw.opts = OptDia()
-    mw.opts.set_OptDia_ui()
-
-    logger_user.info('opts_open() clicked & completed: tried new OptDia()')
-    return
-
-
-def inbattle_status():
-    global inbattle_str
-    if inbattle is False:
-        inbattle_str = 'Ready'
-        logger_utils.debug(f'inbattle_status() completed: {inbattle_str}')
-        return 'Ready'
-    elif inbattle is True:
-        inbattle_str = 'In Battle'
-        logger_utils.debug(f'inbattle_status() completed: {inbattle_str}')
-        return 'In Battle'
-    elif inbattle is None:
-        inbattle_str = 'Away'
-        logger_utils.debug(f'inbattle_status() completed: {inbattle_str}')
-        return 'Away'
-
-
-def show_and_log(instr: object):
-    showInfo(instr)
-    logger_ui.warning(f'\n{instr}')
-
-
-def name_str(instr: str, tail: int) -> str:
-    # rejoined = ' rejoined the game!'  # 0
-    # joined = ' joined the game!'      # 1
-    # left = ' left the game...'        # 2
-    # not_here = ' is starting...'      # 3
-    # name_only = ''                    # 4
-    # tails = [rejoined, joined, left, not_here, name_only]
-    x = next((len(t) for t in tails if t in instr), None)
-    if x:
-        logger_utils.debug('name_str() completed')
-        return str(instr[:-x] + tails[tail])
-
-    else:
-        logger_utils.debug('name_str() completed')
-        return str(instr + tails[tail])
-
-
-def cards_time_today():
-    global cards_today
-    global time_today
-    today_stats = mw.col.stats().todayStats()
-    today_list = today_stats.split(" ")
-    cards_td, time_td = mw.col.db.first("select count(), sum(time)/1000 "
-                                        "from revlog where id > ? ",
-                                        (mw.col.sched.dayCutoff - 86400) * 1000,
-                                        )
-    cards_today = cards_td or 0
-    time_secs = time_td or 0  # in seconds!!!
-    if time_secs > 0:
-        ty_res = time.gmtime(time_secs)
-        time_today = time.strftime("%H:%M", ty_res)
-        if int(time_today[0]) == 0:
-            time_today = time_today[1:]
-    else:
-        time_today = '0:00'
-    logger_utils.info('cards_time_today() completed')
-
-
-def answered_card(*args, **kwargs):
-    global cards_left
-    if inbattle:
-        cards_left = sum(list(mw.col.sched.counts()))
-    cards_time_today()
-    logger_user.info('answered_card() completed')
-
-
-def auto_timeout_reject():
-    mw.ask_deck.timer_ask.stop()
-    if inbattle is not True:
-        mw.ask_deck.close()
-        mw.battle_window.timer_undo_rejected.start(6 * 1000)
-    logger_utils.info('auto_timeout_reject() completed')
-
-
-def check_socks(readables=None, writeables=None, exceptioners=None, tmout: float = 0.0) -> list:
-    try:
-        if readables is None:
-            readables = []
-        if writeables is None:
-            writeables = []
-        if exceptioners is None:
-            exceptioners = []
-        ready_reads, ready_writes, in_errors = select.select(readables, writeables, exceptioners, tmout)
-        logger_utils.debug('check_socks() completed')
-        return [ready_reads, ready_writes, in_errors]
-    except:
-        show_and_log(f'Sorry, there was a problem with Battle Anki...'
-                     f'EC 981')
-
-
-def receive():
-    global server_data
-    global sd
-    try:
-        logger_comms.warning('receive() STARTING OUTER WHILE LOOP')
-        while True:
-            if shutdown is True:
-                break
-            if threading.main_thread().is_alive() is False:
-                break
-            list_socks_ready = check_socks(readables=[mw.socket], tmout=10.0)
-            if len(list_socks_ready[0]) > 0:
-                try:
-                    full_msg = ''
-                    msg_len = int(mw.socket.recv(header))
-                    while len(full_msg) < msg_len:
-                        chunk = mw.socket.recv(msg_len - len(full_msg))
-                        if chunk == b'':
-                            break
-                        full_msg += chunk.decode(msg_format)
-                    if len(full_msg) != msg_len:
-                        show_and_log(f'Sorry, there was a problem with Battle Anki...'
-                                     f'EC 999')
-                    if len(full_msg) == msg_len:
-                        try:
-                            threadlocker.acquire()
-                            server_data = str_to_dict(full_msg)
-                            if mehost:
-                                sd = ifimhost(server_data['clients connected'])
-                            else:
-                                sd = server_data['clients connected']
-                        finally:
-                            threadlocker.release()
-                            logger_comms.debug('receive() completed')
-                except:
-                    pass
-    except Exception as excepti:
-        show_and_log(f'Sorry, there was a problem with Battle Anki...\n'
-                     f'EC 1010')
-    finally:
-        logger_comms.warning('receive() BROKE OUTER WHILE LOOP')
-        return
-
-
-def send_pulse():
-    global local_data
-    last_send = 0
-    try:
-        if time.time() - last_send > 1.5:
-            last_send = time.time()
-            send_str = dict_to_str(local_data)
-            msg_whead = f'{len(send_str):<{header}}' + send_str
-            msg_send = msg_whead.encode(msg_format)
-            ready_to_send = check_socks(writeables=[mw.socket])
-            if len(ready_to_send[1]) > 0:
-                mw.socket.send(msg_send)
-        logger_comms.debug('send_pulse() completed')
-    except Exception as hj:
-        show_and_log(f'There was a problem...\n'
-                     f'Sorry!\n'
-                     f'EC 1865\n'
-                     f'{hj}')
-        mw.battle_window.timer.stop()
-
-
-def start_client_conn():  # ba_startup and battle_connect
-    global loc_rem_ip
-    global startup
-    exists = hasattr(mw, 'socket')
-    try:
-        logger_comms.info('start_client_conn() STARTED')
-        if not exists:  # or (exists is True and 'closed' not in mw.socket):
-            mw.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            mw.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096 * 2)
-            print('Socket Created')
-            if startup:
-                mw.socket.settimeout(0.3)
-                startup = False
-            mw.socket.connect((server, port))
-            loc_rem_ip = str(mw.socket.getsockname())
-            print('Connection initiated with', server)
-            mw.is_connected = True
-        logger_comms.info('start_client_conn() completed')
-
-    except socket.error as e:
-        show_and_log(f"There was a problem starting Battle Anki...\n\n"
-                     f"Please check the config options in\n"
-                     f"Tools -> Addons -> Battle Anki -> Config\n\n"
-                     f"And then restart Anki:\n\n"
-                     f"Battle Anki Error Code 937")
-        mw.is_connected = False
-        mw.battle_window.timer.stop()
-        mw.battle_window.timer_bar.stop()
-        if mw.battle_window.main_win.isVisible():
-            mw.battle_window.main_win.setDisabled(True)
-
-
-def dict_to_str(in_dict: dict):
-    # try:
-    out_str = json.dumps(in_dict, indent=2)
-    logger_utils.debug('dict_to_str() completed')
-    return out_str
-
-
-def str_to_dict(in_str: str):
-    try:
-        out_dict = json.loads(in_str)
-        logger_utils.debug('str_to_dict() completed')
-        return out_dict
-    except json.JSONDecodeError as jsonerro:
-        show_and_log(f'there was a problem\n'
-                     f'{jsonerro}'
-                     f'str_to_dict\n'
-                     f'EC 189m')
-    except RecursionError as recur:
-        show_and_log(f'there was a problem\n'
-                     f'{recur}'
-                     f'str_to_dict\n'
-                     f'EC 195m')
-
-
-def delete_battle_decks():
-    try:
-        d = 1
-        while mw.col.decks.id_for_name(_("Battle Deck %d") % d):
-            the_id = mw.col.decks.id_for_name(_("Battle Deck %d") % d)
-            mw.col.sched.emptyDyn(the_id)
-            mw.col.decks.rem(the_id)
-            logger_utils.warning('delete_battle_decks() DELETED 1 Battle Deck')
-            d += 1
-        mw.moveToState("deckBrowser")
-        mw.maybeReset()
-    except Exception as msg:
-        show_and_log(f'Sorry, there was an error removing the Battle Deck...\n'
-                     f'Error Code 1775\n'
-                     f'{msg}')
-    finally:
-        logger_utils.info('delete_battle_decks() completed')
-        return
-
-
-def requesters_cards_for_matching():
-    global local_data
-    the_ids = list(mw.col.find_cards(terms_of_battle))
-    i = 0
-    if len(the_ids) > 0:
-        while i < len(the_ids) and i <= 2000:
-            id_to_add = int(the_ids[i])
-            add = {'id': id_to_add}
-            local_data['card ids'].append(add)
-            i += 1
-        logger_comms.info('requesters_cards_for_matching() completed')
-    else:
-        show_and_log(f"Sorry, no cards matched the criteria provided."
-                     f"requesters_cards_for_matching"
-                     f"EC 1079")
-
-
-def build_terms_of_battle():
-    global new_box
-    global learn_box
-    global mature_box
-    global today_only
-    global terms_of_battle
-    terms_of_battle = f'deck:{use_deck} {xtra_search} ' if xtra_search else f'deck:{use_deck} '
-    if new_box:
-        terms_of_battle += " is:new"
-    if learn_box:
-        terms_of_battle += " -is:new"
-    if mature_box:
-        terms_of_battle += " prop:ivl>21"
-    if today_only:
-        terms_of_battle += " is:due"
-    logger_utils.info('build_terms_of_battle() completed')
-
+# ######################################################################################################################
 
 def accepted():
-    logger_user.info('accepted() clicked')
+    logger_user.info('accepted clicked')
     global accepted_req
     global ready_for_request
     global matched_size
@@ -2195,126 +1914,166 @@ def accepted():
         dyn_id = make_battle_deck(terms_of_battle)
     get_local_data()
     mw.battle_window.timer_undo_accepted.start(15 * 1000)
-    logger_utils.info('accepted() completed')
+    logger_ui.info('accepted completed')
 
 
-def rejected():
-    logger_user.debug('rejected() clicked')
-    global ready_for_request
+def answered_card(*args, **kwargs):
+    global cards_left
+    if inbattle:
+        cards_left = sum(list(mw.col.sched.counts()))
+    cards_time_today()
+    logger_user.info('answered_card completed')
+
+
+def auto_timeout_reject():
     mw.ask_deck.timer_ask.stop()
-    ready_for_request = False
-    show_and_log(f'You are unable to receive requests for 30 seconds...')
-    mw.battle_window.timer_undo_rejected.start(30 * 1000)
-    logger_utils.info('rejected() clicked & completed')
-
-
-def req_was_denied(show: bool = True):
-    global inbattle
-    global local_data
-    global challenger_ip
-    global challenger_name
-    global challenger_progress
-    global acc_list
-    global conn
-
-    mw.battle_window.timer_denied.stop()
-    local_data['request options']['req Remote IP'] = ''
-    local_data['request options']['req name'] = ''
-
-    if inbattle is True:
-        for rd in [x for x in sd if x['user info']['Remote IP'] in challenger_ip
-                   if x['user info']['in battle?'] is not True]:
-            i = challenger_ip.index(rd['user info']['Remote IP'])
-            challenger_ip.pop(i)
-            challenger_name.pop(i)
-            challenger_progress.pop(i)
-            acc_list.pop(i)
-            conn.pop(i)
-
     if inbattle is not True:
-        global requesters_cards
-        global terms_of_battle
-        requesters_cards = list()
-        terms_of_battle = str()
-        mw.battle_window.undorequest()
+        mw.ask_deck.close()
+        mw.battle_window.timer_undo_rejected.start(6 * 1000)
+    logger_ui.info('auto_timeout_reject completed')
+
+
+def ba_init():  # on gui_hooks._ProfileDidOpenHook().append(ba_init)
+    user_config()
+    start_logger()
+    make_bw()
+    logger_user.info(f'ba_init by: {mw.pm.name}')
+    start_client_conn()
+    running()
+    if not mw.battle_window.timer.isActive():
+        mw.battle_window.timer.start(2500)
+    start_receiving()
+    logger_user.info('ba_init completed')
+    return
+
+
+def battle_anki_clicked():  # on action.triggered.connect(lambda: battle_anki_clicked())
+    logger_user.info('battle_anki_clicked started')
+    try:
         mw.battle_window.showHome()
-        mw.battle_window.timer_bar.stop()
-        mw.battle_window.reset()
-        show_and_log(f"Sorry, looks like the people you invited\n"
-                     f"can't play right now...\n\n"
-                     f"Maybe you are too strong of an AnKing?")
-    logger_utils.info('req_was_denied() completed')
+        mw.battle_window.start_load_bw()
+        if mw.is_connected is False:
+            start_client_conn()
+        if 'utd_ver' in server_data.keys():
+            if server_data['utd_ver'] is not None:
+                c1 = str(local_data['ver']).split('.')
+                s1 = str(server_data['utd_ver']).split('.')
+
+                if int(c1[0]) < int(s1[0]) or int(c1[1]) < int(s1[1]):
+                    utd_ver = str(server_data['utd_ver'])
+                    show_and_log(f'A Battle Anki upgrade is available!\n\n'
+                                 f' The most current version is:\n'
+                                 f'         {utd_ver}\n\n'
+                                 f'     Your version is:\n'
+                                 f'         {ba_ver}\n\n')
+        if not mw.battle_window.timer.isActive():
+            mw.battle_window.timer.start(2500)
+        running()
+        logger_ui.info('battle_anki_clicked completed')
+    except Exception as e1:
+        show_and_log(f"There was a problem starting Battle Anki...\n\n"
+                     f"Please check the config options in\n"
+                     f"Tools -> Addons -> Battle Anki -> Config\n"
+                     f"If problems persist, please report:\n\n"
+                     f"Error Code M-1737", True)
+        mw.battle_window.timer.stop()
+        if mw.battle_window.main_win.isVisible():
+            mw.battle_window.main_win.setDisabled(True)
 
 
-def undo_rejected():
-    global popped_req
-    global ready_for_request
-    popped_req = False
-    ready_for_request = True
-    global challenger_name
-    global requesters_cards
-    global challenger_ip
-    global challenger_progress
-    challenger_name = []
-    requesters_cards = list()
-    challenger_ip = []
-    challenger_progress = []
-    mw.battle_window.timer_undo_rejected.stop()
-    logger_utils.info('undo_rejected() completed')
-
-
-def latestart():
-    global challenger_name
-    global challenger_ip
-    global local_data
-    global dyn_id
-    if matched_box is False:
-        dyn_id = make_battle_deck(terms_of_battle)
-    elif matched_box is True:
-        dyn_id = make_battle_deck(matched_terms)
-    mw.battle_window.timer_undo_request.start(15 * 1000)
-    logger_utils.info('latestart() completed')
-
-
-def check_if_req_accepted():
+def build_matched_list():
     global matched_list
     global decksize
-    global challenger_name
-    global challenger_ip
-    global sd
-    global local_data
-    global popped_comms
+    global matched_size
     global matched_terms
-    global chal_index
     # try:
-    if (popped_comms is False) and (inbattle is not True) and len(local_data['request options']['req Remote IP']) > 0:
-        for rd in [d for d in sd if d['user info']['Remote IP'] in challenger_ip
-                   if d['user info']['accepted req'] is True if d['user info']['in battle?']]:
-            chal_index = challenger_ip.index(rd['user info']['Remote IP'])
-            challenger_ip.insert(0, challenger_ip.pop(chal_index))
-            challenger_name.insert(0, challenger_name.pop(chal_index))
-            global opponent_problem
-            if 'deck problem' in rd['user info'].keys():
-                if rd['user info']['deck problem'] is True:
-                    opponent_problem = rd['user info']['deck problem']
-            if matched_box is True:
-                matched_terms = rd['matched terms']
-            popped_comms = True
-            global challenger_progress
-            challenger_progress[0] = 0
-            latestart()
-            mw.comms = QDialog()
-            mw.comms = RebComms()
-            mw.comms.show()
-            logger_utils.info('check_if_req_accepted() and yes it was')
-            return
-    logger_utils.debug('check_if_req_accepted() completed OUTSIDE of IF FOR loop')
+    matched_list = []
+    # get challenger's applicable cards back and make deck
+    card_ids = mw.col.find_cards(terms_of_battle)
+    for z in requesters_cards:
+        for key, value in z.items():
+            if value in card_ids:
+                matched_list.append(value)
+                if len(matched_list) >= decksize:
+                    break
+    matched_size = len(matched_list)
+    if matched_size > 0:
+        matched_terms = str()
+        count = 0
+        while count <= decksize:
+            matched_terms += f" or cid:{matched_list[count]}"
+            count += 1
+    matched_terms = matched_terms[4:]
+    local_data['matched terms'] = matched_terms
+    logger_ui.info('build_matched_list completed')
+    # except:
+    #     pass
+
+
+def build_terms_of_battle():
+    global new_box
+    global review_box
+    global mature_box
+    global today_only
+    global terms_of_battle
+    terms_of_battle = f'"deck:{use_deck}" {xtra_search}' if xtra_search else f'"deck:{use_deck}"'
+    if new_box:
+        terms_of_battle += " is:new"
+    if review_box:
+        terms_of_battle += " -is:new"
+    if mature_box:
+        terms_of_battle += " prop:ivl>21"
+    if today_only:
+        terms_of_battle += " is:due"
+    logger_utils.info(f'build_terms_of_battle completed\n'
+                      f'terms:| {terms_of_battle}')
+
+
+def bye_to_server():
+    logger_comms.info('bye_to_server STARTED')
+    mw.socket.settimeout(0.0)
+    try:
+        msg_whead = f'{len(disconn_msg):<{header}}' + disconn_msg
+        msg_send = msg_whead.encode(msg_format)
+        ready_to_send = check_socks(writeables=[mw.socket])
+        if len(ready_to_send[1]) > 0:
+            mw.socket.send(msg_send)
+            mw.socket.shutdown()
+            mw.socket.close()
+            logger_comms.info('bye_to_server SHUTDOWN THE SOCKET')
+        logger_comms.info('bye_to_server completed')
+    except:
+        show_and_log(f'There was a problem closing the connection to the server...\n'
+                     f'Error Code 2383\n')
+    # finally:
+    #     return
+
+
+def cards_time_today():
+    global cards_today
+    global time_today
+    today_stats = mw.col.stats().todayStats()
+    today_list = today_stats.split(" ")
+    cards_td, time_td = mw.col.db.first("select count(), sum(time)/1000 "
+                                        "from revlog where id > ? ",
+                                        (mw.col.sched.dayCutoff - 86400) * 1000,
+                                        )
+    cards_today = cards_td or 0
+    time_secs = time_td or 0  # in seconds!!!
+    if time_secs > 0:
+        ty_res = time.gmtime(time_secs)
+        time_today = time.strftime("%H:%M", ty_res)
+        if int(time_today[0]) == 0:
+            time_today = time_today[1:]
+    else:
+        time_today = '0:00'
+    logger_utils.info('cards_time_today completed')
 
 
 def check_for_joins():
     global challenger_name
     global challenger_ip
-    global sd
+    # global sd
     global local_data
     global challenger_progress
     global acc_list
@@ -2334,7 +2093,7 @@ def check_for_joins():
             challenger_progress.append(0)
             acc_list.append(0)
             conn.append(2)  # will add 'joined the game' to progbar text
-    logger_utils.debug('check_for_joins() completed')
+    logger_ui.debug('check_for_joins completed')
 
 
 def check_for_requests():
@@ -2342,7 +2101,7 @@ def check_for_requests():
     global challenger_name
     global challenger_ip
     global chal_index
-    global sd
+    # global sd
     global local_data
     global requesters_cards
     global ready_for_request
@@ -2382,70 +2141,140 @@ def check_for_requests():
 
                     mw.ask_deck.timer_ask.start(26 * 1000)
                     mw.ask_deck.show()
-                    logger_comms.debug('check_for_requests() completed and initiatied AskDialog')
-    logger_comms.debug('check_for_requests() completed WITHOUT AskDialog')
-    # except Exception as meg:
-    #     show_and_log(f'{meg}')
+                    logger_comms.debug('check_for_requests completed and initiatied AskDialog')
+    logger_comms.debug('check_for_requests completed WITHOUT AskDialog')
+    return
+    # except Exception as mxg:
+    #     show_and_log(f'{mxg}')
 
 
-def not_dup_request(ip, c_status):
-    i = readys['ips'].index(ip)
-    ct = int(time.time())
-    ts = readys['last battle start'][i]
-    ms = readys['my last bat start']
-    if ct - ms <= 30:
-        logger_utils.debug('not_dup_request() returned False'
-                          'if ct - ms <= 30:')
-        return False
-    elif c_status is True and ct - ts >= 15:
-        # they are IN battle and started MORE than 15s ago
-        logger_utils.debug('not_dup_request() returned False'
-                          'elif c_status is True and ct - ts >= 15:')
-        return False
+def check_if_req_accepted():
+    global matched_list
+    global decksize
+    global challenger_name
+    global challenger_ip
+    # global sd
+    global local_data
+    global popped_comms
+    global matched_terms
+    global chal_index
+    # try:
+    if (popped_comms is False) and (inbattle is not True) and len(local_data['request options']['req Remote IP']) > 0:
+        for rd in [d for d in sd if d['user info']['Remote IP'] in challenger_ip
+                   if d['user info']['accepted req'] is True if d['user info']['in battle?']]:
+            chal_index = challenger_ip.index(rd['user info']['Remote IP'])
+            challenger_ip.insert(0, challenger_ip.pop(chal_index))
+            challenger_name.insert(0, challenger_name.pop(chal_index))
+            global opponent_problem
+            if 'deck problem' in rd['user info'].keys():
+                if rd['user info']['deck problem'] is True:
+                    opponent_problem = rd['user info']['deck problem']
+            if matched_box is True:
+                matched_terms = rd['matched terms']
+            popped_comms = True
+            global challenger_progress
+            challenger_progress[0] = 0
+            latestart()
+            mw.comms = QDialog()
+            mw.comms = RebComms()
+            mw.comms.show()
+            logger_ui.info('check_if_req_accepted and yes it was')
+            return
+    logger_ui.debug('check_if_req_accepted completed OUTSIDE of IF FOR loop')
+
+
+def check_socks(readables=None, writeables=None, exceptioners=None, tmout: float = 0.0) -> list:
+    try:
+        if readables is None:
+            readables = []
+        if writeables is None:
+            writeables = []
+        if exceptioners is None:
+            exceptioners = []
+        ready_reads, ready_writes, in_errors = select.select(readables, writeables, exceptioners, tmout)
+        logger_utils.debug('check_socks() completed')
+        return [ready_reads, ready_writes, in_errors]
+    except:
+        show_and_log(f'Sorry, there was a problem with Battle Anki...'
+                     f'EC 981')
+
+
+def close_down():
+    global shutdown
+    shutdown = True
+    try:
+        mw.battle_window.close_all()
+    finally:
+        logger_utils.info('close_down completed')
+        logging.shutdown()
+        return
+
+
+def delete_battle_decks():
+    try:
+        d = 1
+        while mw.col.decks.id_for_name("Battle Deck %d" % d):
+            the_id = mw.col.decks.id_for_name("Battle Deck %d" % d)
+            mw.col.sched.emptyDyn(the_id)
+            mw.col.decks.rem(the_id)
+            logger_utils.warning('delete_battle_decks() DELETED 1 Battle Deck')
+            d += 1
+        mw.moveToState("deckBrowser")
+        mw.maybeReset()
+    except Exception as msg:
+        show_and_log(f'Sorry, there was an error removing the Battle Deck...\n'
+                     f'Error Code 1775\n'
+                     f'{msg}')
+    finally:
+        logger_utils.info('delete_battle_decks completed')
+        return
+
+
+def deltacien(cd: dict):
+    global deltas  # a list of dicts
+
+    def lit():
+        logger_comms.info(f"[deltacien]  {cd['user info']['name']}\n{dict_to_str(cd)}")
+        return
+
+    if cd['user info']['Remote IP'] not in [x['user info']['Remote IP'] for x in deltas]:
+        deltas.append(cd)
+        lit()
+        return
     else:
-        logger_utils.debug('not_dup_request() returned True')
-        return True
+        idx = [x['user info']['Remote IP'] for x in deltas].index(cd['user info']['Remote IP'])
+        s_t = datetime.datetime.strptime(str(cd['current CST:']), "%a %b %d %H:%M:%S %Y")
+        llg_t = datetime.datetime.strptime(str(deltas[idx]['current CST:']), "%a %b %d %H:%M:%S %Y")
+        if ((s_t - llg_t > datetime.timedelta(minutes=30))
+                or ('cards today' in cd['user info'].keys() and
+                    (int(cd['user info']['cards today']) - int(deltas[idx]['user info']['cards today']) >= 100))
+                or ('c_t' in cd.keys() and (int(cd['c_t']) - int(deltas[idx]['c_t']) >= 100))):
+            lit()
+            deltas.pop(idx)
+            deltas.insert(idx, cd)
+            return
+        else:
+            return
 
 
-def record_readys():
-    global readys
-    global sd
+def dict_to_str(in_dict: dict):
+    # try:
+    out_str = json.dumps(in_dict, indent=2)
+    # logger_utils.debug('dict_to_str() completed')
+    return out_str
 
-    readys['cc'] = []
 
-    for rd in sd:
-        readys['cc'].append(rd['user info']['Remote IP'])
-
-        if rd['user info']['Remote IP'] == loc_rem_ip:
-            if rd['user info']['in battle?'] is not True and inbattle is True:
-                readys['my last bat start'] = int(time.time())
-        elif rd['user info']['Remote IP'] in readys['ips']:
-            i = readys['ips'].index(rd['user info']['Remote IP'])
-            if rd['user info']['in battle?'] is True and readys['last status'][i] is not True:
-                readys['last battle start'][i] = int(time.time())
-                readys['last status'][i] = rd['user info']['in battle?']
-            else:
-                readys['last status'][i] = rd['user info']['in battle?']
-        elif rd['user info']['Remote IP'] not in readys['ips']:
-            readys['ips'].append(rd['user info']['Remote IP'])
-            readys['names'].append(rd['user info']['name'])
-            readys['last status'].append(rd['user info']['in battle?'])
-            readys['last battle start'].append(0)
-
-    for ip in [x for x in readys['ips'] if x not in readys['cc']]:
-        z = readys['ips'].index(ip)
-        readys['ips'].pop(z)
-        readys['names'].pop(z)
-        readys['last status'].pop(z)
-        readys['last battle start'].pop(z)
-
-    logger_utils.debug('record_readys() completed')
+def do_Ro():
+    handlr.doRollover()
+    show_and_log('The logging handler has completed\n'
+                 'file rollover. ')
 
 
 def confOK():
     logger_user.debug('confOK() clicked')
     global inbattle
     get_loc_req_opts()
+    store_before_send()
     if mw.battle_window.get_request_data():
         mw.battle_window.startWaitingBar()
         build_terms_of_battle()
@@ -2455,58 +2284,31 @@ def confOK():
         if can_sendittt is True:
             mw.battle_window.showWait()
             mw.battle_window.timer_denied.start(30 * 1000)
-        logger_utils.info('confOK() completed and passed')
+        logger_ui.info('confOK completed and passed')
     else:
-        logger_utils.info('confOK() FAILED')
+        logger_ui.info('confOK FAILED')
         inbattle = False
 
 
-def sendittt():
-    logger_user.info('sendittt() clicked')
-    # try:
-    mw.confpopup = QDialog()
-    mw.confpopup = ConfDialog()
-    mw.confpopup.show()
-    # except:
-    #     show_and_log("something went wrong...")
-
-
-def store_before_send():
-    global store_data
-    store_data['request options']['both box'] = new_AND_review_box
-    store_data['request options']['deck size'] = decksize
-    store_data['request options']['matched box'] = matched_box
-    store_data['request options']['new box'] = new_box
-    store_data['request options']['learn box'] = learn_box
-    store_data['request options']['mature box'] = mature_box
-    store_data['request options']['resched box'] = resched_box
-    store_data['request options']['due box'] = today_only
-    store_data['request options']['requester'] = str(mw.pm.name)
-
-    logger_ui.debug('store_before_send() completed')
-    return
-
-
-def recall_after_battle():
-    global new_AND_review_box
-    global decksize
-    global matched_box
-    global new_box
-    global learn_box
-    global mature_box
-    global resched_box
-    global today_only
-    new_AND_review_box = store_data['request options']['both box']
-    decksize = store_data['request options']['deck size']
-    matched_box = store_data['request options']['matched box']
-    new_box = store_data['request options']['new box']
-    learn_box = store_data['request options']['learn box']
-    mature_box = store_data['request options']['mature box']
-    resched_box = store_data['request options']['resched box']
-    today_only = store_data['request options']['due box']
-
-    logger_ui.debug('store_before_send() completed')
-    return
+def fmt_n_log(str_chr: list, le=80, str_log=''):
+    """
+    to omit the header linebreak '\n', place False as third item in tuple [(s1,c1, False), (s2,c2)]
+    :param str_chr: a list of tuples [(s1,c1), (s2,c2)] with 'string to log', 'character to fill'
+    :param le: length of line output, including fill characters
+    :param str_log: a string you want to append this to
+    :return: the formatted string
+    """
+    try:
+        for s in range(len(str_chr)):
+            if len(str_chr[s]) > 2 and str_chr[s][2] is False:
+                str_log += str_chr[s][0]
+            else:
+                p1 = f'{str_chr[s][0]:{str_chr[s][1]}^{le}}'
+                str_log += '\n' + p1
+        return str_log
+    except:
+        show_and_log(f'There was a problem with Battle Anki...'
+                     f'Error Code 2520')
 
 
 def get_loc_req_opts():
@@ -2515,18 +2317,18 @@ def get_loc_req_opts():
     local_data['request options']['deck size'] = decksize
     local_data['request options']['matched box'] = matched_box
     local_data['request options']['new box'] = new_box
-    local_data['request options']['learn box'] = learn_box
+    local_data['request options']['learn box'] = review_box
     local_data['request options']['mature box'] = mature_box
     local_data['request options']['resched box'] = resched_box
     local_data['request options']['due box'] = today_only
     local_data['request options']['requester'] = str(mw.pm.name)
 
-    logger_ui.debug('get_loc_req_opts() completed')
+    logger_utils.debug('get_loc_req_opts completed')
     return
 
 
 def get_local_data():
-    logger_utils.debug('get_local_data() STARTED')
+    logger_ui.debug('get_local_data STARTED')
     global local_data
     global loc_rem_ip
     global inbattle
@@ -2563,34 +2365,75 @@ def get_local_data():
             del local_data['user info']['cards today']
             local_data['c_t'] = cards_today
         local_data['user info']['time today'] = ' '
-    logger_utils.debug('get_local_data() completed')
+    logger_ui.debug('get_local_data completed')
+    return
 
 
-def fmt_n_log(str_chr: list, le=80, str_log=''):
-    # str_char in fmt of a list of tuples [(s1,c1), (s2,c2)]
-    # to omit the header linebreak '\n',
-    # place False as third item in tuple [(s1,c1, False), (s2,c2)]
-    try:
-        for s in range(len(str_chr)):
-            if len(str_chr[s]) > 2 and str_chr[s][2] is False:
-                str_log += str_chr[s][0]
-            else:
-                p1 = f'{str_chr[s][0]:{str_chr[s][1]}^{le}}'
-                str_log += '\n' + p1
-        return str_log
-    except:
-        show_and_log(f'There was a problem with Battle Anki...'
-                     f'Error Code 2520')
+def inbattle_status():
+    global inbattle_str
+    if inbattle is False:
+        inbattle_str = 'Ready'
+        logger_utils.debug(f'inbattle_status completed: {inbattle_str}')
+        return 'Ready'
+    elif inbattle is True:
+        inbattle_str = 'In Battle'
+        logger_utils.debug(f'inbattle_status completed: {inbattle_str}')
+        return 'In Battle'
+    elif inbattle is None:
+        inbattle_str = 'Away'
+        logger_utils.debug(f'inbattle_status completed: {inbattle_str}')
+        return 'Away'
+
+
+def latestart():
+    global challenger_name
+    global challenger_ip
+    global local_data
+    global dyn_id
+    if matched_box is False:
+        dyn_id = make_battle_deck(terms_of_battle)
+    elif matched_box is True:
+        dyn_id = make_battle_deck(matched_terms)
+    mw.battle_window.timer_undo_request.start(15 * 1000)
+    logger_ui.info('latestart completed')
+
+
+def list_mod(inlist: list):
+    logger_utils.debug(f'[SERVER DATA]:\n'
+                       f'[Connected]: {len(sd)}\n'
+                       f'{dict_to_str(server_data)}')
+    logger_utils.debug('list_mod STARTED')
+    for d in inlist:
+
+        if 'cards today' in d['user info'].keys() and int(d['user info']['cards today']) > 0:
+            cds = str(d['user info']['cards today'])
+        elif 'c_t' in d.keys():
+            cds = str(d['c_t'])
+        else:
+            cds = 'NA'
+
+        v = str(d['ver']) if 'ver' in d.keys() else ''
+
+        idx = inlist.index(d)
+        q = inlist.pop(idx)
+        q['user info']['name'] = f"{v}${cds}${q['user info']['name']}"
+        inlist.insert(idx, q)
+        deltacien(d)
+    logger_utils.debug('list_mod completed')
+    return inlist
 
 
 def log_bat_info(add_str=''):
+    pfcs = [ch['user info']['pfrac'] for ch in sd
+            if 'pfrac' in ch['user info'].keys()
+            if ch['user info']['Remote IP'] in challenger_ip]
     l1 = f'[{mw.pm.name} vs. {challenger_name}]'
     l2 = f'[{myprogress}% vs. {challenger_progress}%]'
-    l3 = f'[cards_left, decksize] = {[cards_left, decksize]}]'
+    l3 = f"[{[cards_left, decksize]} v  {pfcs}]"
     sl = fmt_n_log([(l1, '$'), (l2, '-'), (l3, '*')])
     if add_str:
         sl += add_str
-    logger_user.info(sl)
+    logger_utils.info(sl)
 
 
 def log_check_prog():
@@ -2609,133 +2452,11 @@ def log_check_prog():
     elif inbattle is True and (45 < myprogress < 55) and len(challenger_name) > 0 and ff_ff is False:
         log_bat_info()
         ff_ff = True
-    elif inbattle is True and myprogress > 90 and len(challenger_name) > 0 and nty is False:
-        log_bat_info()
-        nty = True
+    # elif inbattle is True and myprogress > 90 and len(challenger_name) > 0 and nty is False:
+    #     log_bat_info()
+    #     nty = True
     else:
         return
-
-
-def running():
-    logger_utils.debug('running() STARTED')
-    global window_open
-    global ready_for_request
-    global popped_req
-    try:
-        if mw.battle_window.main_win.isVisible():
-            window_open = True
-        if mw.is_connected:
-            get_local_data()
-            send_pulse()
-            mw.battle_window.refresh_users()
-            check_if_req_accepted()
-            log_check_prog()
-            if inbattle is False:
-                check_for_requests()
-        logger_utils.debug('running() completed')
-    except Exception as meg:
-        show_and_log(f'{meg}')
-        mw.battle_window.timer.stop()
-        if mw.battle_window.main_win.isVisible():
-            mw.battle_window.main_win.setDisabled(True)
-
-
-def battle_connect():  # on action.triggered.connect(lambda: battle_connect())
-    logger_user.info('battle_connect() clicked')
-    try:
-        mw.battle_window.showHome()
-        mw.battle_window.startLoadBar()
-        if mw.is_connected is False:
-            start_client_conn()
-        if 'utd_ver' in server_data.keys():
-            running()
-            mw.battle_window.timer.start(2500)
-            if server_data['utd_ver'] is not None:
-                c1 = str(local_data['ver']).split('.')
-                s1 = str(server_data['utd_ver']).split('.')
-
-                if int(c1[0]) < int(s1[0]) or int(c1[1]) < int(s1[1]):
-                    utd_ver = str(server_data['utd_ver'])
-                    show_and_log(f'A Battle Anki upgrade is available!\n\n'
-                                 f' The most current version is:\n'
-                                 f'         {utd_ver}\n\n'
-                                 f'     Your version is:\n'
-                                 f'         {ba_ver}\n\n')
-        logger_utils.info('battle_connect() completed')
-    except Exception as e1:
-        show_and_log(f"There was a problem starting Battle Anki...\n\n"
-                     f"Please check the config options in\n"
-                     f"Tools -> Addons -> Battle Anki -> Config\n"
-                     f"If problems persist, please report:\n\n"
-                     f"Battle Anki Error Code 1282")
-        logger_comms.warning(f'battle_connect 2421\n'
-                             f'{e1}')
-        mw.battle_window.timer.stop()
-        if mw.battle_window.main_win.isVisible():
-            mw.battle_window.main_win.setDisabled(True)
-
-
-def ba_startup():  # on gui_hooks._ProfileDidOpenHook().append(ba_startup)
-    logger_user.info(f'ba_startup() clicked by: {mw.pm.name}')
-    global bw
-
-    if not hasattr(mw, 'battle_window'):
-        mw.battle_window = MainWindow()
-        bw = mw.battle_window
-    try:
-        start_client_conn()
-        running()
-        if not mw.battle_window.timer.isActive():
-            mw.battle_window.timer.start(2500)
-        if 'Battle Anki Receiver' not in threading.enumerate():
-            r_th = threading.Thread(target=receive, daemon=False, name='Battle Anki Receiver')
-            r_th.start()
-            logger_comms.info(f'2358 Started receive thread from ba_startup')
-        logger_utils.info('ba_startup() completed')
-    except socket.error:
-        show_and_log(f"There was a problem starting Battle Anki... Sorry!\n\n"
-                     f"Please remember this code:\n"
-                     f"Error Code 1208")
-        mw.battle_window.timer.stop()
-
-
-def bye_to_server():
-    logger_comms.info('bye_to_server() STARTED')
-    mw.socket.settimeout(0.0)
-    try:
-        msg_whead = f'{len(disconn_msg):<{header}}' + disconn_msg
-        msg_send = msg_whead.encode(msg_format)
-        ready_to_send = check_socks(writeables=[mw.socket])
-        if len(ready_to_send[1]) > 0:
-            mw.socket.send(msg_send)
-            mw.socket.shutdown()
-            mw.socket.close()
-            logger_comms.info('bye_to_server() SHUTDOWN THE SOCKET')
-        logger_comms.info('bye_to_server() completed')
-    except:
-        show_and_log(f'There was a problem closing the connection to the server...\n'
-                     f'Error Code 2383\n')
-    # finally:
-    #     return
-
-
-def close_down():
-    global shutdown
-    shutdown = True
-    try:
-        mw.battle_window.close_all()
-    finally:
-        logger_utils.info('close_down() completed')
-        logging.shutdown()
-        return
-
-
-def dummy_close_down():
-    show_and_log(f'For Battle Anki to work properly,'
-                 f'you will need to restart Anki after'
-                 f'you are done with the add-ons window...')
-    close_down()
-    return
 
 
 def make_battle_deck(searchterms, buildsize=None):
@@ -2748,13 +2469,37 @@ def make_battle_deck(searchterms, buildsize=None):
     global make_deck_problem
     global made_count
     global tried
+
+    def log_make_info(mymsg: str, usrmsg: str, ec: int, mc: object = None,
+                      exx: str = 'None'):
+        logger_utils.warning(f'{mymsg}\n'
+                             f'type made_count == {type(mc)}\n'
+                             f'val made_count == {mc}\n'
+                             f'searchterms: {searchterms}\n'
+                             f'buildsize: {buildsize}\n'
+                             f'Exception: {exx}')
+        show_and_log(f'{usrmsg}\n\n'
+                     f'Error Code: {ec}')
+        return
+
+    def deck_del_n_mo():
+        global inbattle
+        global make_deck_problem
+        global tried
+        delete_battle_decks()
+        tried = buildsize
+        make_deck_problem = True
+        inbattle = False
+        return
+
+    import aqt.dyndeckconf
     if buildsize is None:
         buildsize = decksize
     created_b_deck = False
     n = 1
     try:
         deck = mw.col.decks.byName(f"{use_deck}")
-        did = mw.col.decks.id_for_name(f"{use_deck}")
+        did = mw.col.decks.id_for_name(f"{use_deck}")  # deck['id']  #
         did = int(did)
         mw.col.decks.select(did)
         conf = mw.col.decks.confForDid(did)
@@ -2762,25 +2507,25 @@ def make_battle_deck(searchterms, buildsize=None):
             mw.col.decks.select(did)
             deck = mw.col.decks.confForDid(did)
             cur = mw.col.decks.current()
-            show_and_log(f'There may have been a problem creating the deck...\n'
-                         f"if something doesn't look right, just delete\n"
-                         f"the blue deck named 'Battle Deck 1'")
-        elif mw.col.decks.selected() == did:
-            deck = mw.col.decks.current()
+            log_make_info(f'sel deck != did from use_deck',
+                          f'There may have been a problem creating the deck...\n'
+                          f"if something doesn't look right, just delete\n"
+                          f"the blue deck named 'Battle Deck 1'", 2767)
         else:
-            show_and_log(f'There was a problem making the deck...\n'
-                         f'Sorry!')
-    except:
-        show_and_log(f'There seems to be a problem in your Config file...\n'
-                     f'Please navigate to:\n\n'
-                     f'Tools -> Add-ons -> (select Battle Anki) -> click Config\n\n'
-                     f'and double check that the word for the "use_deck":\n'
-                     f'matches a deck that actually exists in your collection\n'
-                     f'Error Code 1298')
-        logger_ui.info(f'')
-    while mw.col.decks.id_for_name(_("Battle Deck %d") % n):
+            deck = mw.col.decks.current()
+    except Exception as excpe:
+        emsg = str(f'There seems to be a problem in your Config file...\n'
+                   f'Please navigate to:\n\n'
+                   f'Tools -> Add-ons -> (select Battle Anki) -> click Config\n\n'
+                   f'and double check that the word for the "use_deck":\n'
+                   f'matches a deck that actually exists in your collection')
+        log_make_info(f'exception when trying to select use_deck',
+                      f'{emsg}\n'
+                      f'If the problem persists, please report it!', 2778,
+                      exx=f'{excpe}')
+    while mw.col.decks.id_for_name("Battle Deck %d" % n):
         n += 1
-    name = _("Battle Deck %d") % n
+    name = "Battle Deck %d" % n
     did = mw.col.decks.newDyn(name)
     dyn = mw.col.decks.get(did)
     if resched_box:
@@ -2792,126 +2537,590 @@ def make_battle_deck(searchterms, buildsize=None):
     dyn["terms"] = [[str(searchterms), int(buildsize), card_order]]  # DYN_DUEPRIORITY]]
     mw.col.decks.save(dyn)
     created_b_deck = True
+
     made_count = mw.col.sched.rebuildDyn()
-    if made_count is None:  # dyn["id"]
-        delete_battle_decks()
-        make_deck_problem = True
-        if accepted_req is True:
-            if inbattle is None:
-                inbattle = False
-            return show_and_log(_("No cards matched the criteria you provided."))
-        else:
-            return
-    elif type(made_count) == list:
-        if not len(made_count) == buildsize:
-            delete_battle_decks()
-            tried = buildsize
-            make_deck_problem = True
-            if accepted_req is True:
-                return show_and_log(_(f"We couldn't find enough cards with\n"
-                                      f"the criteria you provided\n"
-                                      f"Found:     {len(made_count)}\n"
-                                      f"Requested: {tried}\n"
-                                      f"Please try again."))
-            else:
-                return
-    elif type(made_count) == int:
-        if not made_count == buildsize:
-            delete_battle_decks()
-            tried = buildsize
-            make_deck_problem = True
-            if accepted_req is True:
-                return show_and_log(_(f"We couldn't find enough cards with\n"
-                                      f"the criteria you provided\n"
-                                      f"Found:     {made_count}\n"
-                                      f"Requested: {tried}\n"
-                                      f"Please try again."))
-            else:
-                return
-    make_deck_problem = False
-    mw.moveToState("review")
-    mw.battle_window.showBattle()
-    logger_utils.warning('make_battle_deck() COMPELTED SUCCESSFULLY')
-    return did
+
+    if type(made_count) == list and len(made_count) != buildsize:    # old scheduler
+        deck_del_n_mo()
+        emsg = str(f"We couldn't find enough cards with\n"
+                   f"the criteria provided\n\n"
+                   f"Added:     {len(made_count)}\n"
+                   f"Tried:     {tried}\n"
+                   f"Found:     {len(mw.col.find_cards(searchterms))}\n\n")
+        log_make_info(f'could not make full deck, "if"',
+                      f'{emsg}\n', 2810, made_count)
+        return
+    elif type(made_count) == int and made_count != buildsize:   # new scheduler
+        deck_del_n_mo()
+        emsg = str(f"There weren't enough cards with\n"
+                   f"the criteria provided\n\n"
+                   f"Added:     {made_count}\n"
+                   f"Tried:     {tried}"
+                   f"Found:     {len(mw.col.find_cards(searchterms))}\n\n")
+        log_make_info(f'could not make full deck, "elif"',
+                      f'{emsg}\n', 2821, made_count)
+        return
+    elif made_count is None:
+        deck_del_n_mo()
+        emsg = str(f"We couldn't find any cards with\n"
+                   f"the criteria provided\n\n"
+                   f"Added:     {made_count}\n"
+                   f"Tried:     {tried}\n"
+                   f"Found:     {len(mw.col.find_cards(searchterms))}\n\n")
+        log_make_info(f'could not make ANY of deck, "elif"',
+                      f'{emsg}\n', 2832, made_count)
+        return
+    else:
+        make_deck_problem = False
+        mw.moveToState("review")
+        mw.battle_window.showBattle()
+        logger_utils.warning('make_battle_deck COMPLETED SUCCESSFULLY')
+        return did
 
 
-def build_matched_list():
-    global matched_list
-    global decksize
-    global matched_size
-    global matched_terms
-    # try:
-    matched_list = []
-    # get challenger's applicable cards back and make deck
-    card_ids = mw.col.find_cards(terms_of_battle)
-    for z in requesters_cards:
-        for key, value in z.items():
-            if value in card_ids:
-                matched_list.append(value)
-                if len(matched_list) >= decksize:
-                    break
-    matched_size = len(matched_list)
-    if matched_size > 0:
-        matched_terms = str()
-        count = 0
-        while count <= decksize:
-            matched_terms += f" or cid:{matched_list[count]}"
-            count += 1
-    matched_terms = matched_terms[4:]
-    local_data['matched terms'] = matched_terms
-    logger_utils.info('build_matched_list() completed')
-    # except:
-    #     pass
+def make_bw():
+    global bw
+    global logger_ui
+    global logger_user
+    global logger_comms
+    if not hasattr(mw, 'battle_window'):
+        mw.battle_window = MainWindow()
+        bw = mw.battle_window
+    return
+
+
+def name_str(instr: str, tail: int) -> str:
+    # rejoined = ' rejoined the game!'  # 0
+    # joined = ' joined the game!'      # 1
+    # left = ' left the game...'        # 2
+    # not_here = ' is starting...'      # 3
+    # name_only = ''                    # 4
+    # tails = [rejoined, joined, left, not_here, name_only]
+    x = next((len(t) for t in tails if t in instr), None)
+    if x:
+        logger_utils.debug('name_str completed')
+        return str(instr[:-x] + tails[tail])
+
+    else:
+        logger_utils.debug('name_str completed')
+        return str(instr + tails[tail])
+
+
+def not_dup_request(ip, c_status):
+    i = readys['ips'].index(ip)
+    ct = int(time.time())
+    ts = readys['last battle start'][i]
+    ms = readys['my last bat start']
+    if ct - ms <= 30:
+        logger_ui.debug('not_dup_request returned False'
+                        'if ct - ms <= 30:')
+        return False
+    elif c_status is True and ct - ts >= 15:
+        # they are IN battle and started MORE than 15s ago
+        logger_ui.debug('not_dup_request returned False'
+                        'elif c_status is True and ct - ts >= 15:')
+        return False
+    else:
+        logger_ui.debug('not_dup_request returned True')
+        return True
 
 
 def openfolder(filename=log_fold):
-    logger_user.info('openfolder() clicked')
+    logger_utils.info('openfolder clicked')
     try:
         if sys.platform == "win32":
             os.startfile(filename)
         else:
             opener = "open" if sys.platform == "darwin" else "xdg-open"
             subprocess.call([opener, filename])
-        logger_utils.info('openfolder() completed')
+        logger_utils.info('openfolder completed')
+    except:
+        logger_utils.warning('openfolder had a problem')
+
+
+def opts_open():
+    mw.opts = QDialog()
+    mw.opts = OptDia()
+    mw.opts.set_OptDia_ui()
+
+    logger_user.info('opts_open() clicked & completed: tried new OptDia()')
+    return
+
+
+def recall_after_battle():
+    global new_AND_review_box
+    global decksize
+    global matched_box
+    global new_box
+    global review_box
+    global mature_box
+    global resched_box
+    global today_only
+    new_AND_review_box = store_data['request options']['both box']
+    decksize = store_data['request options']['deck size']
+    matched_box = store_data['request options']['matched box']
+    new_box = store_data['request options']['new box']
+    review_box = store_data['request options']['learn box']
+    mature_box = store_data['request options']['mature box']
+    resched_box = store_data['request options']['resched box']
+    today_only = store_data['request options']['due box']
+    
+    try:
+        mw.opts.set_OptDia_ui()
     except:
         pass
+
+    logger_utils.debug('store_before_send completed')
+    return
+
+
+def receive():
+    global server_data
+    global sd
+    try:
+        logger_comms.warning('receive STARTING OUTER WHILE LOOP')
+        while True:
+            if shutdown is True:
+                break
+            if threading.main_thread().is_alive() is False:
+                logger_comms.debug(f'Main Thread no longer alive\n'
+                                   f'{threading.main_thread().getName()}')
+                break
+            list_socks_ready = check_socks(readables=[mw.socket], tmout=10.0)
+            if len(list_socks_ready[0]) > 0:
+                try:
+                    full_msg = ''
+                    msg_len = int(mw.socket.recv(header))
+                    while len(full_msg) < msg_len:
+                        chunk = mw.socket.recv(msg_len - len(full_msg))
+                        if chunk == b'':
+                            break
+                        full_msg += chunk.decode(msg_format)
+                    if len(full_msg) != msg_len:
+                        show_and_log(f'Sorry, there was a problem with Battle Anki...'
+                                     f'EC U-421')
+                    if len(full_msg) == msg_len:
+                        try:
+                            threadlocker.acquire()
+                            server_data = str_to_dict(full_msg)
+                            sd = server_data['clients connected']
+                        except Exception as e1:
+                            show_and_log(f'There was a problem receiving data\n'
+                                         f'from the Battle Anki server...\n'
+                                         f'Please try restarting Anki\n'
+                                         f'Error code 2701\n'
+                                         f'{e1}', True)
+                        finally:
+                            threadlocker.release()
+                            logger_comms.debug('receive completed')
+                except:
+                    pass
+    except Exception as excepti:
+        show_and_log(f'Sorry, there was a problem with Battle Anki...\n'
+                     f'EC 1010', True)
     finally:
-        logger_utils.warning('openfolder() had a problem')
+        logger_comms.warning('receive() BROKE OUTER WHILE LOOP')
+        return
 
 
-def ifimhost(inlist: list):
-    logger_utils.debug(f'[SERVER DATA]:\n'
-                       f'[Connected]: {len(sd)}\n'
-                       f'{dict_to_str(server_data)}')
-    logger_utils.debug('ifimhost() STARTED')
-    for d in inlist:
+def record_readys():
+    global readys
+    # global sd
 
-        if 'cards today' in d['user info'].keys():
-            cds = str(d['user info']['cards today'])
-        elif 'c_t' in d['user info'].keys():
-            cds = str(d['user info']['c_t'])
-        else:
-            cds = ''
+    readys['cc'] = []
 
-        v = str(d['ver']) if 'ver' in d.keys() else ''
+    for rd in sd:
+        readys['cc'].append(rd['user info']['Remote IP'])
 
-        idx = inlist.index(d)
-        q = inlist.pop(idx)
-        q['user info']['name'] = f"{v}${cds}${q['user info']['name']}"
-        inlist.insert(idx, q)
-    logger_utils.debug('ifimhost() completed')
-    return inlist
+        if rd['user info']['Remote IP'] == loc_rem_ip:
+            if rd['user info']['in battle?'] is not True and inbattle is True:
+                readys['my last bat start'] = int(time.time())
+        elif rd['user info']['Remote IP'] in readys['ips']:
+            i = readys['ips'].index(rd['user info']['Remote IP'])
+            if rd['user info']['in battle?'] is True and readys['last status'][i] is not True:
+                readys['last battle start'][i] = int(time.time())
+                readys['last status'][i] = rd['user info']['in battle?']
+            else:
+                readys['last status'][i] = rd['user info']['in battle?']
+        elif rd['user info']['Remote IP'] not in readys['ips']:
+            readys['ips'].append(rd['user info']['Remote IP'])
+            readys['names'].append(rd['user info']['name'])
+            readys['last status'].append(rd['user info']['in battle?'])
+            readys['last battle start'].append(0)
+
+    for ip in [x for x in readys['ips'] if x not in readys['cc']]:
+        z = readys['ips'].index(ip)
+        readys['ips'].pop(z)
+        readys['names'].pop(z)
+        readys['last status'].pop(z)
+        readys['last battle start'].pop(z)
+
+    logger_ui.debug('record_readys completed')
+
+
+def rejected():
+    logger_user.debug('rejected() clicked')
+    global ready_for_request
+    mw.ask_deck.timer_ask.stop()
+    ready_for_request = False
+    show_and_log(f'You are unable to receive requests for 30 seconds...')
+    mw.battle_window.timer_undo_rejected.start(30 * 1000)
+    logger_ui.info('rejected clicked & completed')
+
+
+def req_was_denied(show: bool = True):
+    global inbattle
+    global local_data
+    global challenger_ip
+    global challenger_name
+    global challenger_progress
+    global acc_list
+    global conn
+
+    mw.battle_window.timer_denied.stop()
+    local_data['request options']['req Remote IP'] = ''
+    local_data['request options']['req name'] = ''
+
+    if inbattle is True:
+        for rd in [x for x in sd if x['user info']['Remote IP'] in challenger_ip
+                   if x['user info']['in battle?'] is not True]:
+            i = challenger_ip.index(rd['user info']['Remote IP'])
+            challenger_ip.pop(i)
+            challenger_name.pop(i)
+            challenger_progress.pop(i)
+            acc_list.pop(i)
+            conn.pop(i)
+
+    if inbattle is not True:
+        global requesters_cards
+        global terms_of_battle
+        requesters_cards = list()
+        terms_of_battle = str()
+        mw.battle_window.undorequest()
+        mw.battle_window.showHome()
+        mw.battle_window.timer_bar.stop()
+        mw.battle_window.reset()
+        show_and_log(f"Sorry, looks like the people you invited\n"
+                     f"can't play right now...\n\n"
+                     f"Maybe you are too strong of an AnKing?")
+    logger_ui.info('req_was_denied completed')
+
+
+def requesters_cards_for_matching():
+    global local_data
+    the_ids = list(mw.col.find_cards(terms_of_battle))
+    i = 0
+    if len(the_ids) > 0:
+        while i < len(the_ids) and i <= 2000:
+            id_to_add = int(the_ids[i])
+            add = {'id': id_to_add}
+            local_data['card ids'].append(add)
+            i += 1
+        logger_comms.info('requesters_cards_for_matching completed')
+    else:
+        show_and_log(f"Sorry, no cards matched the criteria provided."
+                     f"requesters_cards_for_matching"
+                     f"EC 1079")
+
+
+def running():
+    logger_ui.debug('running STARTED')
+    global window_open
+    # global ready_for_request
+    # global popped_req
+    try:
+        if mw.battle_window.main_win.isVisible():
+            window_open = True
+        if mw.is_connected:
+            get_local_data()
+            send_pulse()
+            mw.battle_window.refresh_users()
+            check_if_req_accepted()
+            log_check_prog()
+            if inbattle is False:
+                check_for_requests()
+        logger_ui.debug('running completed')
+    except Exception as meg:
+        show_and_log(f'{meg}')
+        mw.battle_window.timer.stop()
+        if mw.battle_window.main_win.isVisible():
+            mw.battle_window.main_win.setDisabled(True)
+
+
+def send_pulse():
+    global local_data
+    last_send = 0
+    try:
+        if time.time() - last_send > 1.5:
+            last_send = time.time()
+            send_str = dict_to_str(local_data)
+            msg_whead = f'{len(send_str):<{header}}' + send_str
+            msg_send = msg_whead.encode(msg_format)
+            ready_to_send = check_socks(writeables=[mw.socket])
+            if len(ready_to_send[1]) > 0:
+                mw.socket.send(msg_send)
+        logger_comms.debug('send_pulse() completed')
+    except Exception as hj:
+        show_and_log(f'There was a problem...\n'
+                     f'Sorry!\n'
+                     f'EC 1865\n'
+                     f'{hj}')
+        mw.battle_window.timer.stop()
+
+
+def sendittt():
+    logger_user.info('sendittt clicked')
+    # try:
+    mw.confpopup = QDialog()
+    mw.confpopup = ConfDialog()
+    mw.confpopup.show()
+    # except:
+    #     show_and_log("something went wrong...")
+
+
+def show_and_log(instr: object, exc=False):
+    if exc:
+        logger_utils.exception(f'\n{instr}')
+    else:
+        logger_utils.warning(f'\n{instr}')
+    showInfo(instr)
+
+
+def spinbox_val_change(val: int, src: str):
+    global decksize
+
+    decksize = val
+
+    if src == 'opt':
+        mw.battle_window.ui.spinbox_bdecksize_bw.setValue(decksize)
+    elif src == 'bw':
+        try:
+            mw.opts.ui.spinbox_bdecksize_opts.setValue(decksize)
+        except:
+            pass
+    return
+
+
+def start_client_conn():  # ba_init and battle_anki_clicked
+    global loc_rem_ip
+    global startup
+    exists = hasattr(mw, 'socket')
+    try:
+        logger_comms.info('start_client_conn STARTED')
+        if not exists:  # or (exists is True and 'closed' not in mw.socket):
+            mw.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            mw.socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096 * 2)
+            print('Socket Created')
+            if startup:
+                mw.socket.settimeout(0.3)
+                startup = False
+            mw.socket.connect((server, port))
+            loc_rem_ip = str(mw.socket.getsockname())
+            print()
+            mw.is_connected = True
+        ms = fmt_n_log([('start_client_conn completed', '', False),
+                       (f'[Connection initiated with {server}]', ':')])
+        logger_comms.info(ms)
+        logger_comms.info(f'mw.is_connected : {mw.is_connected}')
+        return
+    except socket.error as e:
+        show_and_log(f"There was a problem starting Battle Anki...\n\n"
+                     f"Please check the config options in\n"
+                     f"Tools -> Addons -> Battle Anki -> Config\n\n"
+                     f"And then restart Anki:\n\n"
+                     f"Error Code U-496", True)
+        mw.is_connected = False
+        mw.battle_window.timer.stop()
+        mw.battle_window.timer_bar.stop()
+        if mw.battle_window.main_win.isVisible():
+            mw.battle_window.main_win.setDisabled(True)
+
+
+def start_logger():
+    global logger
+    global logger_utils
+    global logger_comms
+    global logger_ui
+    global logger_user
+    global handlr
+    global formatter
+    global log_fold
+
+    log_fold = os.path.join(os.getcwd(), "..", "..", 'addons21', 'BA_logfiles')
+    if not os.path.exists(log_fold):
+        os.makedirs(log_fold)
+    log_nm = 'B_A.log'
+    log_path = os.path.join(log_fold, log_nm)
+
+    logger = logging.getLogger('')
+    logger.setLevel(logging.DEBUG)
+
+    switch_daily_at = datetime.datetime(datetime.datetime.now().year,
+                                        datetime.datetime.now().month,
+                                        datetime.datetime.now().day,
+                                        hour=4, minute=0, fold=1)
+    handlr = logging.handlers.TimedRotatingFileHandler(filename=log_path,
+                                                       when='midnight',
+                                                       backupCount=50,
+                                                       atTime=switch_daily_at)
+
+    formatter = MyFormatter(fmt='%(asctime)-31s %(name)-6s %(levelname)-6s %(message)s',
+                            datefmt='%Y/%m/%d  %I:%M:%S.%f %p')
+    handlr.setFormatter(formatter)
+
+    logger.addHandler(handlr)
+
+    logger_ui = logging.getLogger('BA_UI')
+    logger_user = logging.getLogger('User')
+    logger_utils = logging.getLogger('Utils')
+    logger_comms = logging.getLogger('Comms')
+
+    logger_ui.setLevel(logging.INFO)
+    logger_user.setLevel(logging.INFO)
+    logger_utils.setLevel(logging.INFO)
+    logger_comms.setLevel(logging.INFO)
+
+    s0 = (f'ba_ver: {ba_ver}, schdver: {sv}', '', False)
+    s1 = ('[Logger Initiated]', '=')
+    s2 = (f'Next log file rollover:       '
+          f'{str(datetime.datetime.fromtimestamp(handlr.computeRollover(time.time())))[:-7]}', ' ')
+    so = fmt_n_log([s0, s1, s2])  #
+    logger_utils.info(so)
+    logger_utils.info(dict_to_str(lg_dct))
+    return
+
+
+def start_receiving():
+    try:
+        if 'Battle Anki Receiver' not in threading.enumerate():
+            r_th = threading.Thread(target=receive, daemon=False, name='Battle Anki Receiver')
+            r_th.start()
+            logger_comms.info(f'Starting receive thread from ba_init')
+        return
+    except socket.error:
+        show_and_log(f"There was a problem starting Battle Anki... Sorry!\n\n"
+                     f"Error Code M-1694", True)
+        mw.battle_window.timer.stop()
+
+
+def store_before_send():
+    global store_data
+    store_data['request options']['both box'] = new_AND_review_box
+    store_data['request options']['deck size'] = decksize
+    store_data['request options']['matched box'] = matched_box
+    store_data['request options']['new box'] = new_box
+    store_data['request options']['learn box'] = review_box
+    store_data['request options']['mature box'] = mature_box
+    store_data['request options']['resched box'] = resched_box
+    store_data['request options']['due box'] = today_only
+    store_data['request options']['requester'] = str(mw.pm.name)
+
+    logger_utils.debug('store_before_send completed')
+    return
+
+
+def str_to_ip(mystr: str):
+    myip = str(mystr.split(',')[0])[2:-1]
+    myport = int(mystr.split(',')[1][1:-1])
+    ip = str(f"('{myip}', {myport})")
+    logger_utils.debug('str_to_ip completed')
+    return ip
+
+
+def str_to_dict(in_str: str):
+    try:
+        out_dict = json.loads(in_str)
+        logger_utils.debug('str_to_dict completed')
+        return out_dict
+    except json.JSONDecodeError as jsonerro:
+        show_and_log(f'there was a problem\n'
+                     f'{jsonerro}'
+                     f'str_to_dict\n'
+                     f'EC 189m')
+    except RecursionError as recur:
+        show_and_log(f'there was a problem\n'
+                     f'{recur}'
+                     f'str_to_dict\n'
+                     f'EC 195m')
+
+
+def sav_sd():
+    # if chk_socket:
+    #
+    #     so = fmt_n_log([('[ deltas DUMP ]', '.')])
+    #     logger_user.info(so)
+    #     for s in deltas:
+    #         logger_utils.info(f"[sav_sd][deltas] {s['user info']['name']}\n{dict_to_str(s)}")
+    #
+    #     so = fmt_n_log([('[ SERVER DUMP ]', '~')])
+    #     logger_utils.info(so)
+    #     logger_utils.info(dict_to_str(server_data))
+    #
+    #     return
+    #
+    # so = fmt_n_log([('[ sav_sd has been initiated ]', '+')])
+    # logger_user.info(so)
+    return
+
+
+def undo_rejected():
+    global popped_req
+    global ready_for_request
+    popped_req = False
+    ready_for_request = True
+    global challenger_name
+    global requesters_cards
+    global challenger_ip
+    global challenger_progress
+    challenger_name = []
+    requesters_cards = list()
+    challenger_ip = []
+    challenger_progress = []
+    mw.battle_window.timer_undo_rejected.stop()
+    logger_ui.info('undo_rejected completed')
+
+
+def user_config():
+    global sv
+    global config
+    global use_deck
+    global port
+    global server
+    global password
+    global xtra_search
+    global lg_dct
+
+    sv = mw.col.schedVer()
+
+    config = mw.addonManager.getConfig(__name__)
+    use_deck = str(config['use_deck']).strip()
+    port = int(config['server_port'])
+    server = str(config['server_ip_address']).strip()
+    password = str(config['server_password']).strip()
+    xtra_search = str(config['Extra Search Criteria']).strip()
+    config['Your Anki Version'] = anki.buildinfo.version
+    config['Your Battle Anki version'] = ba_ver
+    config['Your Scheduler Version'] = sv
+    mw.addonManager.writeConfig(__name__, config)
+
+    cfg_keys = ['Your Anki Version', 'Your Battle Anki version', 'Your Scheduler Version', 'use_deck',
+                'Extra Search Criteria', 'server_ip_address', 'server_port', 'server_password']
+    lg_keys = ['Anki', 'BA', 'scv', 'deck', 'xsc', 'sip', 'spt', 'spw']
+    tmpd = {cfg_keys[i]: lg_keys[i] for i in range(8)}
+    lg_dct = {tmpd[k]: v for k, v in config.items() if k in cfg_keys}
+    return
 
 
 # def test():
+#     showInfo(f'{len(mw.col.find_cards("deck:AnKing is:due -is:learn"))}')
+
 
 action = QAction("Battle Anki...", mw)
-action.triggered.connect(lambda: battle_connect())
+action.triggered.connect(lambda: battle_anki_clicked())
 # action.triggered.connect(lambda: test())
 mw.form.menuTools.addAction(action)
 
-gui_hooks.profile_did_open.append(start_logger)
+gui_hooks.main_window_did_init.append(ba_init)
+# gui_hooks.profile_did_open.append(ba_init)
 gui_hooks.profile_will_close.append(close_down)
-# gui_hooks.addons_dialog_will_show.append(dummy_close_down)
 gui_hooks.reviewer_did_answer_card.append(answered_card)
-gui_hooks.profile_did_open.append(ba_startup)
