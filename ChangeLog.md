@@ -56,3 +56,7 @@
 - Spinbox for number of cards of Battle Deck now in Battle Window as well as Options Dialog
 - Minor backend changes
 
+## v2.24 2/1/21
+- Fixed startup error
+- Fixed error with Options dialog and Join function
+- "Window close" button now accessible in Options dialog (and keeps changes).
