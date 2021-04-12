@@ -60,3 +60,8 @@
 - Fixed startup error
 - Fixed error with Options dialog and Join function
 - "Window close" button now accessible in Options dialog (and keeps changes).
+
+## v2.26 4/11/21
+- Server now public 
+- Server info embedded within add-on
+- Just download and play!
